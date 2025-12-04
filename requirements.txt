@@ -1,0 +1,5 @@
+binance-futures-connector
+python-dotenv
+websocket-client
+requests
+urllib3

@@ -1,0 +1,22 @@
+services:
+  binance-bot:
+    build: .
+    container_name: setka
+    restart: always
+    # Читаем ключи из файла .env
+    env_file:
+      - .env
+    environment:
+      # Можно переопределить настройки тут, если нужно
+      - LOG_LEVEL=INFO
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+    networks:
+      - setka-net
+
+networks:
+  setka-net:
+    driver: bridge
