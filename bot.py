@@ -547,7 +547,7 @@ def sync_initial_state():
 
 
 # ==========================
-# MAIN
+# MAIN new
 # ==========================
 def on_message(_, msg):
     try:
