@@ -40,7 +40,7 @@ CONFIG: Dict[str, Any] = {
     "vol_coeff": 100.0,  # Коэффициент множителя объема (1 + step% * 100)
 
     # --- TP / SL ---
-    "take_profit_pct": 0.0003,  # 0.03%
+    "take_profit_pct": 0.0005,  # 0.03%
     "stop_loss_pct": 0.01,  # 1%
 
     "log_level": "INFO",
