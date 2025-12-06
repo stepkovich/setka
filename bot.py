@@ -278,7 +278,23 @@ def start_cycle(pos_side: str):
     center = STATE.last_price
     if center == 0: return
 
-    log.info(f"♻️ STARTING {pos_side} CYCLE @ {center}")
+    # Определяем, есть ли уже позиция, чтобы понять, как строить сетку
+    has_pos = False
+    pos_entry = 0.0
+
+    if CONFIG["mode"] == "real":
+        l, le, s, se = get_real_positions()
+        if pos_side == "LONG" and l > 0: has_pos = True; pos_entry = le
+        if pos_side == "SHORT" and abs(s) > 0: has_pos = True; pos_entry = se
+    else:
+        if pos_side == "LONG" and STATE.emu_pos.long_amt > 0:
+            has_pos = True;
+            pos_entry = STATE.emu_pos.long_cost / STATE.emu_pos.long_amt
+        if pos_side == "SHORT" and STATE.emu_pos.short_amt > 0:
+            has_pos = True;
+            pos_entry = STATE.emu_pos.short_cost / STATE.emu_pos.short_amt
+
+    log.info(f"♻️ STARTING {pos_side} CYCLE @ {center} (Has Pos: {has_pos}, Entry: {pos_entry})")
 
     # Получаем уровни цен И размеры шагов (в %)
     prices, steps_pct = get_fib_levels(center, CONFIG["grid_levels"], CONFIG["fib_step_base"], pos_side)
@@ -293,12 +309,30 @@ def start_cycle(pos_side: str):
     for i, price in enumerate(prices):
         order_side = "BUY" if pos_side == "LONG" else "SELL"
 
-        # Soft Filter: Пропускаем уже пройденные уровни (если восстанавливаемся)
-        if pos_side == "LONG" and price > center * 1.0005: continue
-        if pos_side == "SHORT" and price < center * 0.9995: continue
+        # УМНЫЙ ФИЛЬТР:
+        # 1. Если позиции НЕТ -> Фильтруем "плохие" входы (слишком близко к центру против тренда).
+        # 2. Если позиция ЕСТЬ -> Нам все равно на тренд, нам нужно УСРЕДНЯТЬ.
+        #    Мы ставим ордера только те, которые "хуже" текущей цены (ниже для лонга, выше для шорта).
+
+        should_place = True
+
+        if not has_pos:
+            # Классический старт: пропускаем первые уровни, если они "вдогонку" ушедшей цене
+            if pos_side == "LONG" and price > center * 1.0005: should_place = False
+            if pos_side == "SHORT" and price < center * 0.9995: should_place = False
+        else:
+            # Режим достройки/усреднения:
+            # Для LONG: ставим только если цена ордера НИЖЕ текущей (чтобы усреднить)
+            # Для SHORT: ставим только если цена ордера ВЫШЕ текущей
+            if pos_side == "LONG" and price >= center: should_place = False
+            if pos_side == "SHORT" and price <= center: should_place = False
+
+            # Дополнительная защита: не ставить ордера СЛИШКОМ близко (меньше шага цены)
+            if abs(price - center) / center < 0.0005: should_place = False
+
+        if not should_place: continue
 
         # SMART MARTINGALE LOGIC
-        # Multiplier = 1 + (Step_Percent * Coefficient)
         step_p = steps_pct[i]
         multiplier = 1.0 + (step_p * CONFIG["vol_coeff"])
         multiplier = max(1.0, multiplier)
@@ -408,7 +442,14 @@ def check_grid_realignment(pos_side: str, center_price: float):
         else:
             has_pos = abs(s) > 0
 
-    if has_pos: return
+    # Если есть позиция, Realign не нужен (мы уже в рынке),
+    # НО нам может понадобиться достройка сетки, если она пустая.
+    # Это теперь обрабатывается внутри start_cycle() при рестарте.
+    # Здесь просто следим, чтобы не запускать дубликаты.
+    if has_pos:
+        # Можно добавить проверку "а есть ли ордера усреднения?", но это сложнее.
+        # Пока оставим простую логику: если есть поза - не двигаем сетку.
+        return
 
     if pos_side == "LONG":
         if not STATE.long_grid_orders: start_cycle("LONG"); return
@@ -475,12 +516,16 @@ def sync_initial_state():
         oid = str(o['orderId'])
         if o['positionSide'] == "LONG" and o['side'] == "SELL" and o['reduceOnly']:
             if l > 0:
-                STATE.long_tp_id = oid; long_tp_found = True; log.info(f"✅ Found active LONG TP: {oid}")
+                STATE.long_tp_id = oid;
+                long_tp_found = True;
+                log.info(f"✅ Found active LONG TP: {oid}")
             else:
                 safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
         elif o['positionSide'] == "SHORT" and o['side'] == "BUY" and o['reduceOnly']:
             if abs(s) > 0:
-                STATE.short_tp_id = oid; short_tp_found = True; log.info(f"✅ Found active SHORT TP: {oid}")
+                STATE.short_tp_id = oid;
+                short_tp_found = True;
+                log.info(f"✅ Found active SHORT TP: {oid}")
             else:
                 safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
         else:
@@ -544,7 +589,7 @@ def check_emu_exec(price: float):
 
 
 def main():
-    print("--- DUAL-SIDE HEDGE BOT v6.0 [SMART MARTINGALE + WATCHDOG] ---")
+    print("--- DUAL-SIDE HEDGE BOT v6.1 [SMART REBUILD + WATCHDOG] ---")
     signal.signal(signal.SIGINT, graceful_shutdown)
 
     init_api();
@@ -569,7 +614,7 @@ def main():
         start_cycle("SHORT")
         STATE.ws_client.agg_trade(symbol=STATE.symbol.lower(), id=1)
 
-    # Запуск Сторожевого Пса (через 2 минуты тишины - харакири)
+    # Запуск Сторожевого Пса
     wd = Watchdog(timeout=120)
     wd.start()
 
