@@ -466,6 +466,23 @@ def check_grid_realignment(pos_side: str, center_price: float):
             log.info(f"🏃 Price moved DOWN ({center_price}). Realigning SHORT Grid...")
             start_cycle("SHORT")
 
+def ensure_tp():
+    if CONFIG["mode"] != "real":
+        return
+    l, le, s, se = get_real_positions()
+
+    # LONG
+    if l > 0:
+        if not STATE.long_tp_id:
+            log.warning("⚠️ LONG position without TP, recreating...")
+            update_tp("LONG", l, le)
+
+    # SHORT
+    if abs(s) > 0:
+        if not STATE.short_tp_id:
+            log.warning("⚠️ SHORT position without TP, recreating...")
+            update_tp("SHORT", abs(s), se)
+
 
 def check_stop_loss(price: float):
     if STATE.is_shutting_down: return
@@ -624,6 +641,7 @@ def main():
             if STATE.last_price > 0:
                 check_grid_realignment("LONG", STATE.last_price)
                 check_grid_realignment("SHORT", STATE.last_price)
+                ensure_tp()
     except Exception as e:
         log.error(f"Loop Error: {e}")
 
