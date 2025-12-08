@@ -28,20 +28,20 @@ CONFIG: Dict[str, Any] = {
     "api_secret": os.getenv("BINANCE_API_SECRET", ""),
 
     "peper balance": 20,
-    "leverage": 15,
-    "base_order_size": 6,  # Базовый лот ($)
+    "leverage": 16,
+    "base_order_size": 10,  # Базовый лот ($)
 
     # --- Grid Settings ---
-    "grid_levels": 13,
+    "grid_levels": 16,
     "fib_step_base": 0.00015,  # 0.015% - база
     "pagen": 3,  # Подтягивание
 
     # --- Smart Martingale ---
-    "vol_coeff": 100.0,  # Коэффициент множителя объема (1 + step% * 100)
+    "vol_coeff": 60.0,  # Коэффициент множителя объема (1 + step% * 100)
 
     # --- TP / SL ---
-    "take_profit_pct": 0.0005,  # 0.03%
-    "stop_loss_pct": 0.01,  # 1%
+    "take_profit_pct": 0.0003,  # 0.03%
+    "stop_loss_pct": 1,  # 1%
 
     "log_level": "INFO",
 }
