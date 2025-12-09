@@ -258,7 +258,9 @@ def place_order(side: str, pos_side: str, price: float, qty: float, is_maker=Tru
         "type": "LIMIT", "quantity": qty, "price": price,
         "timeInForce": "GTX" if is_maker else "GTC"
     }
-    if reduce_only: params["timeInForce"] = "GTC"
+    if reduce_only:
+        params["timeInForce"] = "GTC"
+        params["reduceOnly"] = "true"
 
     res = safe_call(STATE.client.new_order, **params)
     if not res and is_maker:
@@ -524,7 +526,7 @@ def graceful_shutdown(signum, frame):
 def sync_initial_state():
     log.info("🔄 Syncing state with exchange...")
     l, le, s, se = get_real_positions()
-    orders = safe_call(STATE.client.get_orders, symbol=STATE.symbol) or []
+    orders = safe_call(STATE.client.get_open_orders, symbol=STATE.symbol) or []
 
     long_tp_found = False
     short_tp_found = False
