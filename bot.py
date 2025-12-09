@@ -260,7 +260,7 @@ def place_order(side: str, pos_side: str, price: float, qty: float, is_maker=Tru
     }
     if reduce_only:
         params["timeInForce"] = "GTC"
-        params["reduceOnly"] = "true"
+        params["reduceOnly"] = True
 
     res = safe_call(STATE.client.new_order, **params)
     if not res and is_maker:
