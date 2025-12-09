@@ -102,6 +102,7 @@ class State:
 
 
 STATE = State()
+STATE_LOCK = threading.RLock()  # <--- ГЛОБАЛЬНАЯ БЛОКИРОВКА ДЛЯ ЗАЩИТЫ ПОТОКОВ
 
 
 # ==========================
@@ -258,7 +259,9 @@ def place_order(side: str, pos_side: str, price: float, qty: float, is_maker=Tru
         "type": "LIMIT", "quantity": qty, "price": price,
         "timeInForce": "GTX" if is_maker else "GTC"
     }
-    if reduce_only: params["timeInForce"] = "GTC"
+    if reduce_only:
+        params["timeInForce"] = "GTC"
+        params["reduceOnly"] = "true"
 
     res = safe_call(STATE.client.new_order, **params)
     if not res and is_maker:
@@ -273,83 +276,73 @@ def place_order(side: str, pos_side: str, price: float, qty: float, is_maker=Tru
 # LOGIC CORE
 # ==========================
 def start_cycle(pos_side: str):
-    if STATE.is_shutting_down: return
-    cancel_grid_only(pos_side)
-    center = STATE.last_price
-    if center == 0: return
+    with STATE_LOCK:
+        if STATE.is_shutting_down: return
+        cancel_grid_only(pos_side)
+        center = STATE.last_price
+        if center == 0: return
 
-    # Определяем, есть ли уже позиция, чтобы понять, как строить сетку
-    has_pos = False
-    pos_entry = 0.0
+        # Определяем, есть ли уже позиция, чтобы понять, как строить сетку
+        has_pos = False
+        pos_entry = 0.0
 
-    if CONFIG["mode"] == "real":
-        l, le, s, se = get_real_positions()
-        if pos_side == "LONG" and l > 0: has_pos = True; pos_entry = le
-        if pos_side == "SHORT" and abs(s) > 0: has_pos = True; pos_entry = se
-    else:
-        if pos_side == "LONG" and STATE.emu_pos.long_amt > 0:
-            has_pos = True;
-            pos_entry = STATE.emu_pos.long_cost / STATE.emu_pos.long_amt
-        if pos_side == "SHORT" and STATE.emu_pos.short_amt > 0:
-            has_pos = True;
-            pos_entry = STATE.emu_pos.short_cost / STATE.emu_pos.short_amt
-
-    log.info(f"♻️ STARTING {pos_side} CYCLE @ {center} (Has Pos: {has_pos}, Entry: {pos_entry})")
-
-    # Получаем уровни цен И размеры шагов (в %)
-    prices, steps_pct = get_fib_levels(center, CONFIG["grid_levels"], CONFIG["fib_step_base"], pos_side)
-
-    # Save bounds for Stop Loss
-    if pos_side == "LONG":
-        STATE.long_bottom_price = prices[-1]
-    else:
-        STATE.short_top_price = prices[-1]
-
-    count = 0
-    for i, price in enumerate(prices):
-        order_side = "BUY" if pos_side == "LONG" else "SELL"
-
-        # УМНЫЙ ФИЛЬТР:
-        # 1. Если позиции НЕТ -> Фильтруем "плохие" входы (слишком близко к центру против тренда).
-        # 2. Если позиция ЕСТЬ -> Нам все равно на тренд, нам нужно УСРЕДНЯТЬ.
-        #    Мы ставим ордера только те, которые "хуже" текущей цены (ниже для лонга, выше для шорта).
-
-        should_place = True
-
-        if not has_pos:
-            # Классический старт: пропускаем первые уровни, если они "вдогонку" ушедшей цене
-            if pos_side == "LONG" and price > center * 1.0005: should_place = False
-            if pos_side == "SHORT" and price < center * 0.9995: should_place = False
+        if CONFIG["mode"] == "real":
+            l, le, s, se = get_real_positions()
+            if pos_side == "LONG" and l > 0: has_pos = True; pos_entry = le
+            if pos_side == "SHORT" and abs(s) > 0: has_pos = True; pos_entry = se
         else:
-            # Режим достройки/усреднения:
-            # Для LONG: ставим только если цена ордера НИЖЕ текущей (чтобы усреднить)
-            # Для SHORT: ставим только если цена ордера ВЫШЕ текущей
-            if pos_side == "LONG" and price >= center: should_place = False
-            if pos_side == "SHORT" and price <= center: should_place = False
+            if pos_side == "LONG" and STATE.emu_pos.long_amt > 0:
+                has_pos = True;
+                pos_entry = STATE.emu_pos.long_cost / STATE.emu_pos.long_amt
+            if pos_side == "SHORT" and STATE.emu_pos.short_amt > 0:
+                has_pos = True;
+                pos_entry = STATE.emu_pos.short_cost / STATE.emu_pos.short_amt
 
-            # Дополнительная защита: не ставить ордера СЛИШКОМ близко (меньше шага цены)
-            if abs(price - center) / center < 0.0005: should_place = False
+        log.info(f"♻️ STARTING {pos_side} CYCLE @ {center} (Has Pos: {has_pos}, Entry: {pos_entry})")
 
-        if not should_place: continue
+        # Получаем уровни цен И размеры шагов (в %)
+        prices, steps_pct = get_fib_levels(center, CONFIG["grid_levels"], CONFIG["fib_step_base"], pos_side)
 
-        # SMART MARTINGALE LOGIC
-        step_p = steps_pct[i]
-        multiplier = 1.0 + (step_p * CONFIG["vol_coeff"])
-        multiplier = max(1.0, multiplier)
+        # Save bounds for Stop Loss
+        if pos_side == "LONG":
+            STATE.long_bottom_price = prices[-1]
+        else:
+            STATE.short_top_price = prices[-1]
 
-        order_qty_usd = CONFIG["base_order_size"] * multiplier
-        qty = order_qty_usd / price
+        count = 0
+        for i, price in enumerate(prices):
+            order_side = "BUY" if pos_side == "LONG" else "SELL"
 
-        oid = place_order(order_side, pos_side, price, qty, is_maker=True)
-        if oid:
-            count += 1
-            grid_info = {"price": price, "qty": qty, "lvl": i + 1}
-            if pos_side == "LONG":
-                STATE.long_grid_orders[oid] = grid_info
+            should_place = True
+
+            if not has_pos:
+                if pos_side == "LONG" and price > center * 1.0005: should_place = False
+                if pos_side == "SHORT" and price < center * 0.9995: should_place = False
             else:
-                STATE.short_grid_orders[oid] = grid_info
+                if pos_side == "LONG" and price >= center: should_place = False
+                if pos_side == "SHORT" and price <= center: should_place = False
+                if abs(price - center) / center < 0.0005: should_place = False
 
-    log.info(f"✅ Placed {count} orders for {pos_side}")
+            if not should_place: continue
+
+            # SMART MARTINGALE LOGIC
+            step_p = steps_pct[i]
+            multiplier = 1.0 + (step_p * CONFIG["vol_coeff"])
+            multiplier = max(1.0, multiplier)
+
+            order_qty_usd = CONFIG["base_order_size"] * multiplier
+            qty = order_qty_usd / price
+
+            oid = place_order(order_side, pos_side, price, qty, is_maker=True)
+            if oid:
+                count += 1
+                grid_info = {"price": price, "qty": qty, "lvl": i + 1}
+                if pos_side == "LONG":
+                    STATE.long_grid_orders[oid] = grid_info
+                else:
+                    STATE.short_grid_orders[oid] = grid_info
+
+        log.info(f"✅ Placed {count} orders for {pos_side}")
 
 
 def update_tp(pos_side: str, amt: float, entry: float):
@@ -374,97 +367,92 @@ def update_tp(pos_side: str, amt: float, entry: float):
 
 
 def on_execution(oid: str, side: str, pos_side: str, price: float, qty: float):
-    is_long_grid = oid in STATE.long_grid_orders
-    is_short_grid = oid in STATE.short_grid_orders
+    with STATE_LOCK:
+        is_long_grid = oid in STATE.long_grid_orders
+        is_short_grid = oid in STATE.short_grid_orders
 
-    if is_long_grid or is_short_grid:
-        log.info(f"📉 GRID HIT ({pos_side}) @ {price}")
-        if is_long_grid: del STATE.long_grid_orders[oid]
-        if is_short_grid: del STATE.short_grid_orders[oid]
+        if is_long_grid or is_short_grid:
+            log.info(f"📉 GRID HIT ({pos_side}) @ {price}")
+            if is_long_grid: del STATE.long_grid_orders[oid]
+            if is_short_grid: del STATE.short_grid_orders[oid]
 
-        if CONFIG["mode"] == "emulator":
-            if pos_side == "LONG":
-                val = STATE.emu_pos.long_cost + (price * qty)
-                amt = STATE.emu_pos.long_amt + qty
-                STATE.emu_pos.long_amt = amt;
-                STATE.emu_pos.long_cost = val
-                if amt > 0: update_tp("LONG", amt, val / amt)
+            if CONFIG["mode"] == "emulator":
+                if pos_side == "LONG":
+                    val = STATE.emu_pos.long_cost + (price * qty)
+                    amt = STATE.emu_pos.long_amt + qty
+                    STATE.emu_pos.long_amt = amt;
+                    STATE.emu_pos.long_cost = val
+                    if amt > 0: update_tp("LONG", amt, val / amt)
+                else:
+                    val = STATE.emu_pos.short_cost + (price * qty)
+                    amt = STATE.emu_pos.short_amt + qty
+                    STATE.emu_pos.short_amt = amt;
+                    STATE.emu_pos.short_cost = val
+                    if amt > 0: update_tp("SHORT", amt, val / amt)
             else:
-                val = STATE.emu_pos.short_cost + (price * qty)
-                amt = STATE.emu_pos.short_amt + qty
-                STATE.emu_pos.short_amt = amt;
-                STATE.emu_pos.short_cost = val
-                if amt > 0: update_tp("SHORT", amt, val / amt)
-        else:
-            time.sleep(1)
-            l, le, s, se = get_real_positions()
-            if pos_side == "LONG":
-                update_tp("LONG", l, le)
-            else:
-                update_tp("SHORT", abs(s), se)
+                time.sleep(1)
+                l, le, s, se = get_real_positions()
+                if pos_side == "LONG":
+                    update_tp("LONG", l, le)
+                else:
+                    update_tp("SHORT", abs(s), se)
 
-    is_long_tp = (oid == STATE.long_tp_id)
-    is_short_tp = (oid == STATE.short_tp_id)
+        is_long_tp = (oid == STATE.long_tp_id)
+        is_short_tp = (oid == STATE.short_tp_id)
 
-    if is_long_tp or is_short_tp:
-        log.info(f"🎉 PROFIT ({pos_side}) @ {price}! Restarting cycle...")
-        if CONFIG["mode"] == "emulator":
-            if pos_side == "LONG":
-                pnl = (price * qty) - STATE.emu_pos.long_cost
-                STATE.emu_pos.long_amt = 0;
-                STATE.emu_pos.long_cost = 0;
-                STATE.long_tp_id = None
-            else:
-                pnl = STATE.emu_pos.short_cost - (price * qty)
-                STATE.emu_pos.short_amt = 0;
-                STATE.emu_pos.short_cost = 0;
-                STATE.short_tp_id = None
-            STATE.emu_balance += pnl
-            log.info(f"💰 EMU PnL: {pnl:.4f} Bal: {STATE.emu_balance:.2f}")
+        if is_long_tp or is_short_tp:
+            log.info(f"🎉 PROFIT ({pos_side}) @ {price}! Restarting cycle...")
+            if CONFIG["mode"] == "emulator":
+                if pos_side == "LONG":
+                    pnl = (price * qty) - STATE.emu_pos.long_cost
+                    STATE.emu_pos.long_amt = 0;
+                    STATE.emu_pos.long_cost = 0;
+                    STATE.long_tp_id = None
+                else:
+                    pnl = STATE.emu_pos.short_cost - (price * qty)
+                    STATE.emu_pos.short_amt = 0;
+                    STATE.emu_pos.short_cost = 0;
+                    STATE.short_tp_id = None
+                STATE.emu_balance += pnl
+                log.info(f"💰 EMU PnL: {pnl:.4f} Bal: {STATE.emu_balance:.2f}")
 
-        time.sleep(2)
-        start_cycle(pos_side)
+            time.sleep(2)
+            start_cycle(pos_side)
 
 
 def check_grid_realignment(pos_side: str, center_price: float):
-    if STATE.is_shutting_down: return
+    with STATE_LOCK:
+        if STATE.is_shutting_down: return
 
-    has_pos = False
-    if CONFIG["mode"] == "emulator":
-        if pos_side == "LONG":
-            has_pos = STATE.emu_pos.long_amt > 0
+        has_pos = False
+        if CONFIG["mode"] == "emulator":
+            if pos_side == "LONG":
+                has_pos = STATE.emu_pos.long_amt > 0
+            else:
+                has_pos = STATE.emu_pos.short_amt > 0
         else:
-            has_pos = STATE.emu_pos.short_amt > 0
-    else:
-        l, _, s, _ = get_real_positions()
+            l, _, s, _ = get_real_positions()
+            if pos_side == "LONG":
+                has_pos = l > 0
+            else:
+                has_pos = abs(s) > 0
+
+        if has_pos: return
+
         if pos_side == "LONG":
-            has_pos = l > 0
+            if not STATE.long_grid_orders: start_cycle("LONG"); return
+            top_order_price = max([o['price'] for o in STATE.long_grid_orders.values()])
+            threshold = CONFIG["fib_step_base"] * int(CONFIG["pagen"])
+            if center_price > top_order_price * (1 + threshold):
+                log.info(f"🏃 Price moved UP ({center_price}). Realigning LONG Grid...")
+                start_cycle("LONG")
         else:
-            has_pos = abs(s) > 0
-
-    # Если есть позиция, Realign не нужен (мы уже в рынке),
-    # НО нам может понадобиться достройка сетки, если она пустая.
-    # Это теперь обрабатывается внутри start_cycle() при рестарте.
-    # Здесь просто следим, чтобы не запускать дубликаты.
-    if has_pos:
-        # Можно добавить проверку "а есть ли ордера усреднения?", но это сложнее.
-        # Пока оставим простую логику: если есть поза - не двигаем сетку.
-        return
-
-    if pos_side == "LONG":
-        if not STATE.long_grid_orders: start_cycle("LONG"); return
-        top_order_price = max([o['price'] for o in STATE.long_grid_orders.values()])
-        threshold = CONFIG["fib_step_base"] * int(CONFIG["pagen"])
-        if center_price > top_order_price * (1 + threshold):
-            log.info(f"🏃 Price moved UP ({center_price}). Realigning LONG Grid...")
-            start_cycle("LONG")
-    else:
-        if not STATE.short_grid_orders: start_cycle("SHORT"); return
-        bottom_order_price = min([o['price'] for o in STATE.short_grid_orders.values()])
-        threshold = CONFIG["fib_step_base"] * int(CONFIG["pagen"])
-        if center_price < bottom_order_price * (1 - threshold):
-            log.info(f"🏃 Price moved DOWN ({center_price}). Realigning SHORT Grid...")
-            start_cycle("SHORT")
+            if not STATE.short_grid_orders: start_cycle("SHORT"); return
+            bottom_order_price = min([o['price'] for o in STATE.short_grid_orders.values()])
+            threshold = CONFIG["fib_step_base"] * int(CONFIG["pagen"])
+            if center_price < bottom_order_price * (1 - threshold):
+                log.info(f"🏃 Price moved DOWN ({center_price}). Realigning SHORT Grid...")
+                start_cycle("SHORT")
 
 def ensure_tp():
     if CONFIG["mode"] != "real":
@@ -475,13 +463,15 @@ def ensure_tp():
     if l > 0:
         if not STATE.long_tp_id:
             log.warning("⚠️ LONG position without TP, recreating...")
-            update_tp("LONG", l, le)
+            with STATE_LOCK:
+                update_tp("LONG", l, le)
 
     # SHORT
     if abs(s) > 0:
         if not STATE.short_tp_id:
             log.warning("⚠️ SHORT position without TP, recreating...")
-            update_tp("SHORT", abs(s), se)
+            with STATE_LOCK:
+                update_tp("SHORT", abs(s), se)
 
 
 def check_stop_loss(price: float):
@@ -493,19 +483,21 @@ def check_stop_loss(price: float):
         sl_price = STATE.long_bottom_price * (1 - CONFIG["stop_loss_pct"])
         if price < sl_price:
             log.critical(f"🚨 LONG STOP LOSS HIT! Price {price} < {sl_price}. CLOSING ALL!")
-            safe_call(STATE.client.new_order, symbol=STATE.symbol, side="SELL", positionSide="LONG", type="MARKET",
-                      quantity=l)
-            cancel_grid_only("LONG");
-            STATE.long_bottom_price = 0
+            with STATE_LOCK:
+                safe_call(STATE.client.new_order, symbol=STATE.symbol, side="SELL", positionSide="LONG", type="MARKET",
+                          quantity=l)
+                cancel_grid_only("LONG");
+                STATE.long_bottom_price = 0
 
     if abs(s) > 0 and STATE.short_top_price > 0:
         sl_price = STATE.short_top_price * (1 + CONFIG["stop_loss_pct"])
         if price > sl_price:
             log.critical(f"🚨 SHORT STOP LOSS HIT! Price {price} > {sl_price}. CLOSING ALL!")
-            safe_call(STATE.client.new_order, symbol=STATE.symbol, side="BUY", positionSide="SHORT", type="MARKET",
-                      quantity=abs(s))
-            cancel_grid_only("SHORT");
-            STATE.short_top_price = 0
+            with STATE_LOCK:
+                safe_call(STATE.client.new_order, symbol=STATE.symbol, side="BUY", positionSide="SHORT", type="MARKET",
+                          quantity=abs(s))
+                cancel_grid_only("SHORT");
+                STATE.short_top_price = 0
 
 
 def graceful_shutdown(signum, frame):
@@ -523,44 +515,45 @@ def graceful_shutdown(signum, frame):
 # ==========================
 def sync_initial_state():
     log.info("🔄 Syncing state with exchange...")
-    l, le, s, se = get_real_positions()
-    orders = safe_call(STATE.client.get_orders, symbol=STATE.symbol) or []
+    with STATE_LOCK:
+        l, le, s, se = get_real_positions()
+        orders = safe_call(STATE.client.get_orders, symbol=STATE.symbol) or []
 
-    long_tp_found = False
-    short_tp_found = False
+        long_tp_found = False
+        short_tp_found = False
 
-    for o in orders:
-        oid = str(o['orderId'])
-        if o['positionSide'] == "LONG" and o['side'] == "SELL" and o['reduceOnly']:
-            if l > 0:
-                STATE.long_tp_id = oid;
-                long_tp_found = True;
-                log.info(f"✅ Found active LONG TP: {oid}")
+        for o in orders:
+            oid = str(o['orderId'])
+            if o['positionSide'] == "LONG" and o['side'] == "SELL" and o['reduceOnly']:
+                if l > 0:
+                    STATE.long_tp_id = oid;
+                    long_tp_found = True;
+                    log.info(f"✅ Found active LONG TP: {oid}")
+                else:
+                    safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
+            elif o['positionSide'] == "SHORT" and o['side'] == "BUY" and o['reduceOnly']:
+                if abs(s) > 0:
+                    STATE.short_tp_id = oid;
+                    short_tp_found = True;
+                    log.info(f"✅ Found active SHORT TP: {oid}")
+                else:
+                    safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
             else:
                 safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
-        elif o['positionSide'] == "SHORT" and o['side'] == "BUY" and o['reduceOnly']:
-            if abs(s) > 0:
-                STATE.short_tp_id = oid;
-                short_tp_found = True;
-                log.info(f"✅ Found active SHORT TP: {oid}")
-            else:
-                safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
+
+        if l > 0:
+            log.info(f"Resuming LONG: {l} @ {le}")
+            if not long_tp_found: update_tp("LONG", l, le)
+            start_cycle("LONG")
         else:
-            safe_call(STATE.client.cancel_order, symbol=STATE.symbol, orderId=oid)
+            start_cycle("LONG")
 
-    if l > 0:
-        log.info(f"Resuming LONG: {l} @ {le}")
-        if not long_tp_found: update_tp("LONG", l, le)
-        start_cycle("LONG")
-    else:
-        start_cycle("LONG")
-
-    if abs(s) > 0:
-        log.info(f"Resuming SHORT: {abs(s)} @ {se}")
-        if not short_tp_found: update_tp("SHORT", abs(s), se)
-        start_cycle("SHORT")
-    else:
-        start_cycle("SHORT")
+        if abs(s) > 0:
+            log.info(f"Resuming SHORT: {abs(s)} @ {se}")
+            if not short_tp_found: update_tp("SHORT", abs(s), se)
+            start_cycle("SHORT")
+        else:
+            start_cycle("SHORT")
 
 
 # ==========================
@@ -591,22 +584,23 @@ def on_message(_, msg):
 
 
 def check_emu_exec(price: float):
-    for oid in list(STATE.long_grid_orders.keys()):
-        o = STATE.long_grid_orders[oid]
-        if price <= o['price']: on_execution(oid, "BUY", "LONG", o['price'], o['qty'])
-    for oid in list(STATE.short_grid_orders.keys()):
-        o = STATE.short_grid_orders[oid]
-        if price >= o['price']: on_execution(oid, "SELL", "SHORT", o['price'], o['qty'])
-    if STATE.long_tp_id and STATE.emu_pos.long_amt > 0:
-        tp = STATE.emu_pos.long_cost / STATE.emu_pos.long_amt * (1 + CONFIG["take_profit_pct"])
-        if price >= tp: on_execution(STATE.long_tp_id, "SELL", "LONG", tp, STATE.emu_pos.long_amt)
-    if STATE.short_tp_id and STATE.emu_pos.short_amt > 0:
-        tp = STATE.emu_pos.short_cost / STATE.emu_pos.short_amt * (1 - CONFIG["take_profit_pct"])
-        if price <= tp: on_execution(STATE.short_tp_id, "BUY", "SHORT", tp, STATE.emu_pos.short_amt)
+    with STATE_LOCK:
+        for oid in list(STATE.long_grid_orders.keys()):
+            o = STATE.long_grid_orders[oid]
+            if price <= o['price']: on_execution(oid, "BUY", "LONG", o['price'], o['qty'])
+        for oid in list(STATE.short_grid_orders.keys()):
+            o = STATE.short_grid_orders[oid]
+            if price >= o['price']: on_execution(oid, "SELL", "SHORT", o['price'], o['qty'])
+        if STATE.long_tp_id and STATE.emu_pos.long_amt > 0:
+            tp = STATE.emu_pos.long_cost / STATE.emu_pos.long_amt * (1 + CONFIG["take_profit_pct"])
+            if price >= tp: on_execution(STATE.long_tp_id, "SELL", "LONG", tp, STATE.emu_pos.long_amt)
+        if STATE.short_tp_id and STATE.emu_pos.short_amt > 0:
+            tp = STATE.emu_pos.short_cost / STATE.emu_pos.short_amt * (1 - CONFIG["take_profit_pct"])
+            if price <= tp: on_execution(STATE.short_tp_id, "BUY", "SHORT", tp, STATE.emu_pos.short_amt)
 
 
 def main():
-    print("--- DUAL-SIDE HEDGE BOT v6.1 [SMART REBUILD + WATCHDOG] ---")
+    print("--- DUAL-SIDE HEDGE BOT v6.2 [THREAD SAFE] ---")
     signal.signal(signal.SIGINT, graceful_shutdown)
 
     init_api();
