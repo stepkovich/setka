@@ -271,13 +271,31 @@ def calculate_grid(center, side, pos_usd):
 
 
 def cancel_grid(side):
+    # 1. Получаем список ID из памяти
     with STATE.lock:
         ids = list(STATE.long_grid_ids) if side == "LONG" else list(STATE.short_grid_ids)
+        # ВАЖНО: Не очищаем список СРАЗУ! Очистим после отмены.
+
+    if not ids:
+        # Если память пуста, перестрахуемся и проверим биржу (защита от рестарта)
+        orders = api_call("get_open_orders", symbol=CONFIG["symbol"]) or []
+        ids = [o['orderId'] for o in orders if o['positionSide'] == side and o['type'] == 'LIMIT']
+
+    # 2. Отменяем
+    for oid in ids:
+        api_call("cancel_order", symbol=CONFIG["symbol"], orderId=oid)
+
+    # 3. Даем бирже время прожевать
+    time.sleep(0.5)
+
+    # 4. Теперь чистим память
+    with STATE.lock:
         if side == "LONG":
-            STATE.long_grid_ids = []; STATE.long_top_price = 0
+            STATE.long_grid_ids = [];
+            STATE.long_top_price = 0
         else:
-            STATE.short_grid_ids = []; STATE.short_bottom_price = 0
-    for oid in ids: api_call("cancel_order", symbol=CONFIG["symbol"], orderId=oid)
+            STATE.short_grid_ids = [];
+            STATE.short_bottom_price = 0
 
 
 def update_tp(side, amt, entry):
