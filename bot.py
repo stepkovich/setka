@@ -278,9 +278,11 @@ def fetch_full_state_audit():
                 amt = float(p['positionAmt']);
                 entry = float(p['entryPrice'])
                 if p['positionSide'] == "LONG":
-                    STATE.long.amount = amt; STATE.long.entry_price = entry
+                    STATE.long.amount = amt;
+                    STATE.long.entry_price = entry
                 elif p['positionSide'] == "SHORT":
-                    STATE.short.amount = abs(amt); STATE.short.entry_price = entry
+                    STATE.short.amount = abs(amt);
+                    STATE.short.entry_price = entry
 
     orders_res = api_call("get_orders", symbol=CONFIG["symbol"])
     if orders_res is not None:
@@ -297,7 +299,7 @@ def fetch_full_state_audit():
                 pos_side = o['positionSide'];
                 reduce = o.get('reduceOnly', False)
                 is_tp = (pos_side == "LONG" and side == "SELL" and reduce) or (
-                            pos_side == "SHORT" and side == "BUY" and reduce)
+                        pos_side == "SHORT" and side == "BUY" and reduce)
                 is_grid = (o['type'] == 'LIMIT' and not reduce)
                 if is_tp:
                     if pos_side == "LONG":
@@ -364,7 +366,19 @@ def reconcile_side(side):
 
             if should_realign:
                 log.info(f"🏃 Price moved ({current_price}). Realigning {side}...")
-                for oid in list(grid_map.keys()): api_call("cancel_order", symbol=CONFIG["symbol"], orderId=oid)
+
+                # Копируем ключи, чтобы можно было удалять во время итерации
+                for oid in list(grid_map.keys()):
+                    res = api_call("cancel_order", symbol=CONFIG["symbol"], orderId=oid)
+
+                    if res is None:
+                        pass
+
+                if side == "LONG":
+                    STATE.grid_orders_long.clear()
+                else:
+                    STATE.grid_orders_short.clear()
+
                 # На следующем такте поставится новая сетка
 
 
@@ -525,7 +539,8 @@ def ws_worker():
 
             threading.Thread(target=keep_alive, daemon=True).start()
         except:
-            log.error("ListenKey Error"); sys.exit(1)
+            log.error("ListenKey Error");
+            sys.exit(1)
 
     ws.agg_trade(symbol=CONFIG["symbol"].lower(), id=2)
     while True: time.sleep(10)
@@ -541,7 +556,8 @@ def main():
             STATE.instrument.price_precision = s['pricePrecision']
             STATE.instrument.quote_asset = s['quoteAsset']
         except Exception as e:
-            log.error(f"Init Error: {e}"); return
+            log.error(f"Init Error: {e}");
+            return
 
     t = threading.Thread(target=ws_worker, daemon=True);
     t.start()
@@ -570,7 +586,8 @@ def main():
         except KeyboardInterrupt:
             sys.exit(0)
         except Exception as e:
-            log.error(f"Main Loop Error: {e}"); time.sleep(5)
+            log.error(f"Main Loop Error: {e}");
+            time.sleep(5)
 
 
 if __name__ == "__main__":
