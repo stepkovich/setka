@@ -28,6 +28,7 @@ CONFIG = {
     "api_secret": os.getenv("BINANCE_API_SECRET", ""),
 
     # Risk Management
+    "peper_balance": 100,
     "leverage": 16,
     "max_margin_usage_pct": 0.95,
 
