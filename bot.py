@@ -328,7 +328,7 @@ def reconcile_side(side):
             o_side = "SELL" if side == "LONG" else "BUY"
             res = api_call("new_order", symbol=CONFIG["symbol"], side=o_side, positionSide=side,
                            type="LIMIT", quantity=pos_data.amount, price=round(target, 5),
-                           timeInForce="GTC", reduceOnly="true")
+                           timeInForce="GTC")
             if res:
                 with STATE.lock:
                     if side == "LONG":
