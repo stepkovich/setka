@@ -6,7 +6,7 @@ import threading
 import sys
 import uuid
 import random
-from decimal import Decimal, getcontext
+from decimal import Decimal, getcontext, ROUND_FLOOR
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -16,7 +16,7 @@ from binance.error import ClientError
 from dotenv import load_dotenv
 
 # ==========================
-# 1. CONFIGURATION
+# 0. SETUP & GLOBALS
 # ==========================
 load_dotenv()
 getcontext().prec = 28
@@ -28,12 +28,12 @@ CONFIG = {
     "api_secret": os.getenv("BINANCE_API_SECRET", ""),
 
     # Risk Management
-    "peper_balance": 100,
     "leverage": 16,
     "max_margin_usage_pct": 0.95,
 
     # Grid Settings
     "base_order_size": 8,
+    "peper_balance": 100,  # Баланс эмулятора
     "grid_levels": 16,
     "fib_step_base": 0.00015,
     "vol_coeff": 60.0,
@@ -48,9 +48,38 @@ CONFIG = {
 
 logging.basicConfig(level=getattr(logging, CONFIG["log_level"]), format="%(asctime)s [%(levelname)s] %(message)s",
                     datefmt="%H:%M:%S")
-log = logging.getLogger("BOT_v11.1")
+log = logging.getLogger("BOT_v11.2")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
+
+
+# ==========================
+# 1. MATH HELPERS (PRECISION)
+# ==========================
+def round_step(value, step):
+    """Округляет значение до ближайшего шага (tickSize или stepSize)"""
+    if step == 0: return value
+    # Используем Decimal для точного деления
+    val_d = Decimal(str(value))
+    step_d = Decimal(str(step))
+    # Округляем вниз (FLOOR) для кол-ва, чтобы не превысить баланс, или математически
+    # Для цены лучше обычное округление, для кол-ва - вниз.
+    # Но для универсальности здесь используем квантование.
+    return float((val_d // step_d) * step_d)
+
+
+def round_qty(value, step):
+    """Округление количества (всегда вниз или мат. округление)"""
+    return round_step(value, step)
+
+
+def round_price(value, step):
+    """Округление цены"""
+    # Для цены важно попасть в сетку. round_step подходит.
+    # Иногда нужно форматировать через format() чтобы не было 1.200000001
+    rp = round_step(value, step)
+    # Удаляем артефакты float
+    return float(Decimal(str(rp)).quantize(Decimal(str(step))))
 
 
 # ==========================
@@ -81,8 +110,13 @@ class BotState:
         self.long_top_price = 0.0
         self.short_bottom_price = 0.0
 
+        # Instrument Precision (Default)
+        self.tick_size = 0.00001
+        self.step_size = 1.0
         self.min_qty = 1.0
+        self.min_notional = 5.0  # Мин сумма ордера
         self.price_precision = 5
+        self.qty_precision = 0
         self.quote_asset = "USDT"
 
         # Emulator
@@ -192,7 +226,6 @@ def fetch_state_sync():
 
 
 def clean_start():
-    """Чистка при запуске"""
     log.info("🧹 Clean Start...")
     orders = api_call("get_orders", symbol=CONFIG["symbol"])
     if orders:
@@ -258,9 +291,13 @@ def update_tp(side, amt, entry):
     if old_tp: api_call("cancel_order", symbol=CONFIG["symbol"], orderId=old_tp)
 
     target = get_tp_price(entry, side)
+
+    # PRECISION FIX
+    final_price = round_price(target, STATE.tick_size)
+
     o_side = "SELL" if side == "LONG" else "BUY"
     res = api_call("new_order", symbol=CONFIG["symbol"], side=o_side, positionSide=side,
-                   type="LIMIT", quantity=amt, price=round(target, STATE.price_precision), timeInForce="GTC")
+                   type="LIMIT", quantity=amt, price=final_price, timeInForce="GTC")
     if res:
         with STATE.lock:
             if side == "LONG":
@@ -291,17 +328,25 @@ def start_cycle(side):
 
     for p, usd in orders:
         if (pos_usd + usd) > cap: break
-        qty = round(usd / p, 0)
-        if qty < STATE.min_qty: continue
+
+        # PRECISION FIX
+        final_price = round_price(p, STATE.tick_size)
+        qty_raw = usd / final_price
+        final_qty = round_qty(qty_raw, STATE.step_size)
+
+        # Min Filters
+        if final_qty < STATE.min_qty: continue
+        if (final_qty * final_price) < STATE.min_notional: continue
+
         if amt > 0:
-            if side == "LONG" and p >= center: continue
-            if side == "SHORT" and p <= center: continue
+            if side == "LONG" and final_price >= center: continue
+            if side == "SHORT" and final_price <= center: continue
 
         res = api_call("new_order", symbol=CONFIG["symbol"], side=o_side, positionSide=side,
-                       type="LIMIT", quantity=qty, price=round(p, STATE.price_precision), timeInForce="GTX")
+                       type="LIMIT", quantity=final_qty, price=final_price, timeInForce="GTX")
         if res:
             new_ids.append(str(res['orderId']))
-            prices.append(p)
+            prices.append(final_price)
 
     with STATE.lock:
         if side == "LONG":
@@ -347,7 +392,6 @@ def ws_worker():
         try:
             d = json.loads(m)
             e = d.get('e')
-
             if e == 'aggTrade':
                 p = float(d['p'])
                 with STATE.lock:
@@ -359,7 +403,6 @@ def ws_worker():
                         EMULATOR.exec_logic(x[0], p, x[2], x[3])
                         on_execution_event(x[0])
 
-                # === SOCKET TRAILING ===
                 now = time.time()
                 if now - last_realign_ts > 1.0:
                     do_long = False;
@@ -396,13 +439,32 @@ def ws_worker():
 
 
 def main():
-    log.info(f"🚀 BOT v11.1 [SOCKET TRAILING + WATCHDOG]. Mode: {CONFIG['mode']}")
+    log.info(f"🚀 BOT v11.2 [PRECISION FIX]. Mode: {CONFIG['mode']}")
+
     if CONFIG["mode"] == "real":
-        info = CLIENT.exchange_info()
-        s = next(s for s in info['symbols'] if s['symbol'] == CONFIG["symbol"])
-        STATE.min_qty = float(next(f for f in s['filters'] if f['filterType'] == 'LOT_SIZE')['minQty'])
-        STATE.price_precision = s['pricePrecision']
-        STATE.quote_asset = s['quoteAsset']
+        try:
+            info = CLIENT.exchange_info()
+            s = next(s for s in info['symbols'] if s['symbol'] == CONFIG["symbol"])
+
+            # FILTERS LOAD
+            p_filter = next(f for f in s['filters'] if f['filterType'] == 'PRICE_FILTER')
+            l_filter = next(f for f in s['filters'] if f['filterType'] == 'LOT_SIZE')
+            notional = next((f for f in s['filters'] if f['filterType'] == 'MIN_NOTIONAL'), None)
+
+            STATE.tick_size = float(p_filter['tickSize'])
+            STATE.step_size = float(l_filter['stepSize'])
+            STATE.min_qty = float(l_filter['minQty'])
+            STATE.price_precision = s['pricePrecision']
+            STATE.qty_precision = s['quantityPrecision']
+            STATE.quote_asset = s['quoteAsset']
+
+            if notional: STATE.min_notional = float(notional.get('minNotional', 5.0))
+
+            log.info(f"Tick: {STATE.tick_size}, Step: {STATE.step_size}, Min$: {STATE.min_notional}")
+
+        except Exception as e:
+            log.error(f"Init Error: {e}");
+            return
 
     threading.Thread(target=ws_worker, daemon=True).start()
     log.info("⏳ Waiting for price...")
@@ -415,28 +477,19 @@ def main():
     start_cycle("SHORT")
 
     last_audit = time.time()
-
     while True:
         try:
             time.sleep(1)
             check_stop_loss(STATE.last_price)
-
-            # WATCHDOG (60 sec)
             if time.time() - last_audit > 60:
                 with STATE.lock:
                     old_l = STATE.long.amount; old_s = STATE.short.amount
                 fetch_state_sync()
                 with STATE.lock:
                     new_l = STATE.long.amount; new_s = STATE.short.amount
-
-                if abs(new_l - old_l) > STATE.min_qty or (new_l > 0 and not STATE.long_tp_id):
-                    log.warning("🧐 Watchdog LONG sync...");
-                    start_cycle("LONG")
-                if abs(new_s - old_s) > STATE.min_qty or (new_s > 0 and not STATE.short_tp_id):
-                    log.warning("🧐 Watchdog SHORT sync...");
-                    start_cycle("SHORT")
+                if abs(new_l - old_l) > STATE.min_qty or (new_l > 0 and not STATE.long_tp_id): start_cycle("LONG")
+                if abs(new_s - old_s) > STATE.min_qty or (new_s > 0 and not STATE.short_tp_id): start_cycle("SHORT")
                 last_audit = time.time()
-
         except KeyboardInterrupt:
             sys.exit(0)
         except:
