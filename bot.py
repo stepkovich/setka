@@ -40,7 +40,7 @@ CONFIG = {
     "pagen": 3,
 
     # Exit Strategy
-    "take_profit_pct": 0.0003,
+    "take_profit_pct": 0.0005,
     "stop_loss_pct": 0.15,
 
     "log_level": "INFO"
@@ -343,7 +343,7 @@ def start_cycle(side):
             if side == "SHORT" and final_price <= center: continue
 
         res = api_call("new_order", symbol=CONFIG["symbol"], side=o_side, positionSide=side,
-                       type="LIMIT", quantity=final_qty, price=final_price, timeInForce="GTX")
+                       type="LIMIT", quantity=final_qty, price=final_price, timeInForce="GTC")
         if res:
             new_ids.append(str(res['orderId']))
             prices.append(final_price)
