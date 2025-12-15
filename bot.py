@@ -38,9 +38,9 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     # СПИСОК МОНЕТ ДЛЯ ТОРГОВЛИ
-    SYMBOLS = ["DOGEUSDC", "XRPUSDC"]
+    SYMBOLS = ["DOGEUSDC", "1000PEPEUSDC"]
 
-    LEVERAGE = 15
+    LEVERAGE = 16
     BASE_ORDER_SIZE = 6.0  # Размер первого ордера в $ (для каждой монеты)
     GRID_LEVELS = 16
     FIB_STEP_BASE = 0.00012
