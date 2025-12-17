@@ -18,7 +18,7 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 from dotenv import load_dotenv
 
 # ==========================================
-# 0. CONFIG
+# 0. CONFIG (SAFE SCALPING MODE)
 # ==========================================
 load_dotenv()
 getcontext().prec = 28
@@ -28,7 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("HEDGE_BOT_MULTI")
+log = logging.getLogger("SAFE_BOT")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -37,16 +37,40 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    # СПИСОК МОНЕТ ДЛЯ ТОРГОВЛИ
-    SYMBOLS = ["1000PEPEUSDC"]
+    # ТОРГУЕМЫЕ ПАРЫ
+    SYMBOLS = ["DOGEUSDC", "1000PEPEUSDC"]
 
-    LEVERAGE = 16
-    BASE_ORDER_SIZE = 6.0  # Размер первого ордера в $ (для каждой монеты)
-    GRID_LEVELS = 16
-    FIB_STEP_BASE = 0.00012
-    VOL_COEFF = 80.0
-    TAKE_PROFIT_PCT = 0.0005
-    PAGEN = 3
+    LEVERAGE = 10
+
+    # Стартовый ордер: $6 (безопасно для депо $90)
+    BASE_ORDER_SIZE = 6.0
+
+    # --- СЕТКА (ОПТИМАЛЬНАЯ) ---
+    # Всего 5 уровней усреднения (чтобы выдерживать просадки до -5%)
+    GRID_LEVELS = 6
+
+    # Шаг 0.1% (Фибоначчи раздвинет его: 0.1% -> 0.1% -> 0.2% -> 0.3% -> 0.5%)
+    # Это позволяет собирать волатильность, но не набирать позу на шуме.
+    FIB_STEP_BASE = 0.002
+
+    # Множитель объема 1.4 (Мягкая прогрессия)
+    # Ордера будут: $6 -> $8.4 -> $11.7 -> $16.4 -> $23.
+    # Максимальная загрузка одной монеты: ~$65 (70% депо).
+    VOL_COEFF = 1.25
+
+    # --- ВЫХОД ---
+    # Тейк 0.2% (это $0.05 - $0.15 чистыми с ордера).
+    # При 40 сделках в день = $2-$4 профита.
+    TAKE_PROFIT_PCT = 0.002
+
+    # --- ЗАЩИТА (STOP LOSS) ---
+    # Стоп 2.5%. Если цена ушла на 2.5% от СРЕДНЕЙ цены входа — режем.
+    # Это спасает от ликвидации. Срабатывать будет редко (раз в неделю-две).
+    STOP_LOSS_PCT = 0.04
+
+    # Трейлинг входа (3 шага = 0.4% отступа)
+    PAGEN = 2
+
     RECONNECT_DELAY = 5
     WATCHDOG_TIMEOUT = 60
 
@@ -72,7 +96,6 @@ class GridLevel:
 
 @dataclass
 class SymbolState:
-    """Хранит состояние конкретной монеты"""
     symbol: str
     info: SymbolPrecision
 
@@ -104,7 +127,7 @@ def retry_request(max_retries=3, delay=1.0):
                     if i == 0:
                         log.info(f"⚠️ Network glitch in {func.__name__}, retrying...")
                     else:
-                        log.warning(f"⚠️ Retry {i + 1}/{max_retries} for {func.__name__}: {e}")
+                        log.warning(f"⚠️ Retry {i + 1}/{max_retries}: {e}")
                     time.sleep(delay)
                     last_exception = e
                 except ClientError as e:
@@ -113,7 +136,6 @@ def retry_request(max_retries=3, delay=1.0):
                     log.error(f"❌ Unknown Error in {func.__name__}: {e}")
                     raise e
             if last_exception:
-                log.error(f"❌ Connection Failed: {last_exception}")
                 raise last_exception
 
         return wrapper
@@ -122,7 +144,7 @@ def retry_request(max_retries=3, delay=1.0):
 
 
 # ==========================================
-# 2. BOT CLASS (MULTI-SYMBOL)
+# 2. BOT CLASS
 # ==========================================
 class HedgeBot:
     def __init__(self):
@@ -131,32 +153,28 @@ class HedgeBot:
         self.client: Optional[UMFutures] = None
         self.ws_client: Optional[UMFuturesWebsocketClient] = None
 
-        # Словарь состояний: {"DOGEUSDC": SymbolState(...), ...}
         self.states: Dict[str, SymbolState] = {}
-
         self.last_ws_update = time.time()
         self.listen_key = None
 
     def initialize(self):
-        log.info("🔹 Init Multi-Symbol Bot...")
+        log.info("🔹 Init SAFE Bot (StopLoss 2.5%, Grid 3 Lvls)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
 
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
 
-            # 1. Загружаем инфо по всем символам
+            # 1. Загружаем инфо
             exchange_info = self.client.exchange_info()
             all_symbols_info = {s['symbol']: s for s in exchange_info['symbols']}
 
-            # 2. Инициализируем стейты для каждого символа из конфига
+            # 2. Инициализируем стейты
             for sym in Config.SYMBOLS:
                 if sym not in all_symbols_info:
-                    log.error(f"❌ Symbol {sym} not found on Binance Futures!")
+                    log.error(f"❌ Symbol {sym} not found!")
                     continue
 
                 s_info = all_symbols_info[sym]
-
-                # Парсим точности
                 p_f = next(f for f in s_info['filters'] if f['filterType'] == 'PRICE_FILTER')
                 l_f = next(f for f in s_info['filters'] if f['filterType'] == 'LOT_SIZE')
                 n_f = next((f for f in s_info['filters'] if f['filterType'] in ['MIN_NOTIONAL', 'NOTIONAL']), None)
@@ -173,29 +191,21 @@ class HedgeBot:
                     price_precision=s_info['pricePrecision'], qty_precision=s_info['quantityPrecision']
                 )
 
-                # Расчет порога трейлинга
                 dist = sum(Config.FIB_STEP_BASE * f for f in self._fib(Config.PAGEN))
 
-                # Создаем состояние
                 self.states[sym] = SymbolState(
                     symbol=sym,
                     info=precision,
                     trailing_threshold_pct=dist
                 )
 
-                # Настройка аккаунта (плечо)
                 self._setup_account(sym)
-
-                # Получаем цену
                 ticker = self.client.ticker_price(symbol=sym)
                 self.states[sym].last_price = float(ticker['price'])
+                log.info(f"✅ Loaded {sym}: Price={self.states[sym].last_price}")
 
-                log.info(f"✅ Loaded {sym}: Price={self.states[sym].last_price}, Tick={precision.tick_size}")
-
-            # 3. Синхронизируем позиции по всем монетам
+            # 3. Синхронизируем позиции
             self._sync_all_positions()
-
-            # Прогрев REST
             self._ping_rest()
 
         except Exception as e:
@@ -204,13 +214,11 @@ class HedgeBot:
 
     def _setup_account(self, symbol):
         try:
-            # Режим хеджирования (он глобальный для аккаунта, достаточно 1 раз, но не страшно)
             try:
                 m = self.client.get_position_mode()
                 if not m['dualSidePosition']: self.client.change_position_mode(dualSidePosition="true")
             except:
-                pass  # Может быть уже включено
-
+                pass
             self.client.change_leverage(symbol=symbol, leverage=Config.LEVERAGE)
         except Exception as e:
             log.warning(f"⚠️ Setup account {symbol}: {e}")
@@ -225,14 +233,20 @@ class HedgeBot:
         lvls = []
         fib = self._fib(Config.GRID_LEVELS)
         cum = 0.0
+
+        # Объем растет геометрически: Base -> Base*1.5 -> Base*1.5*1.5
+        current_usd = Config.BASE_ORDER_SIZE
+
         for i in range(Config.GRID_LEVELS):
             step = Config.FIB_STEP_BASE * fib[i]
             cum += step
             p = base * (1.0 - cum) if direction == "LONG" else base * (1.0 + cum)
-            mult = max(1.0, 1.0 + (step * Config.VOL_COEFF))
-            usd = Config.BASE_ORDER_SIZE * mult
-            qty = usd / p
-            lvls.append(GridLevel(i + 1, p, qty, usd, cum))
+
+            # Новый объем = Старый * Коэффициент
+            current_usd = current_usd * Config.VOL_COEFF
+
+            qty = current_usd / p
+            lvls.append(GridLevel(i + 1, p, qty, current_usd, cum))
         return lvls
 
     def _recon(self, avg, qty, direction, symbol):
@@ -270,19 +284,16 @@ class HedgeBot:
     def _cancel_orders_for_side(self, symbol, pos_side):
         orders = self.client.get_orders(symbol=symbol)
         to_cancel = [o['orderId'] for o in orders if o['positionSide'] == pos_side]
-        if to_cancel:
-            for oid in to_cancel:
-                try:
-                    self.client.cancel_order(symbol=symbol, orderId=oid)
-                except Exception:
-                    pass
-            log.info(f"[{symbol}] 🗑️ Cancelled {len(to_cancel)} for {pos_side}")
+        for oid in to_cancel:
+            try:
+                self.client.cancel_order(symbol=symbol, orderId=oid)
+            except:
+                pass
 
     @retry_request(max_retries=3)
     def _place_limit_order(self, symbol, side, pos_side, qty, price, is_maker=True, reduce_only=False):
         state = self.states[symbol]
         info = state.info
-
         fp = self._rp(price, info)
         fq = self._rq(qty, info)
 
@@ -301,40 +312,76 @@ class HedgeBot:
             return False, e.error_code
 
     @retry_request(max_retries=3)
-    def _sync_all_positions(self):
-        # Получаем ВСЕ позиции аккаунта одним запросом (без фильтра symbol)
-        # Это экономит API вызовы
-        positions = self.client.get_position_risk()
+    def _emergency_close(self, symbol, pos_side, qty):
+        """Мгновенное закрытие по рынку (STOP LOSS)"""
+        # Здесь нельзя использовать лимитки, т.к. при обвале рынка лимитка может не сработать.
+        # Безопасность депозита важнее комиссии Taker.
+        side = "SELL" if pos_side == "LONG" else "BUY"
+        try:
+            self.client.new_order(
+                symbol=symbol, side=side, positionSide=pos_side,
+                type="MARKET", quantity=qty
+            )
+            log.warning(f"[{symbol}] 🚨 EMERGENCY STOP LOSS EXECUTED ({pos_side})")
+        except Exception as e:
+            log.error(f"[{symbol}] ❌ Failed to exec Stop Loss: {e}")
 
-        # Сбрасываем локальные данные перед обновлением (для безопасности)
-        # Но аккуратно, чтобы не стереть настройки
+    @retry_request(max_retries=3)
+    def _sync_all_positions(self):
+        positions = self.client.get_position_risk()
+        # Сброс локальных данных
         for state in self.states.values():
             state.long_amt = 0.0
             state.short_amt = 0.0
 
         for p in positions:
             sym = p['symbol']
-            # Нас интересуют только наши монеты из конфига
             if sym in self.states:
                 state = self.states[sym]
                 amt = float(p['positionAmt'])
                 entry = float(p['entryPrice'])
-
                 if p['positionSide'] == "LONG":
-                    state.long_amt = amt
+                    state.long_amt = amt;
                     state.long_entry = entry
                 elif p['positionSide'] == "SHORT":
-                    state.short_amt = abs(amt)
+                    state.short_amt = abs(amt);
                     state.short_entry = entry
 
     @retry_request(max_retries=3)
     def _keep_alive_listen_key(self):
-        if self.listen_key:
-            self.client.renew_listen_key(listenKey=self.listen_key)
+        if self.listen_key: self.client.renew_listen_key(listenKey=self.listen_key)
 
     @retry_request(max_retries=3)
     def _ping_rest(self):
         self.client.time()
+
+    # --- STOP LOSS LOGIC ---
+    def check_stop_loss(self, symbol):
+        """Проверка Стоп-Лосса на каждом тике"""
+        state = self.states[symbol]
+        lp = state.last_price
+        sl_pct = Config.STOP_LOSS_PCT
+        triggered = False
+
+        # LONG
+        if state.long_amt > 0:
+            drop = (state.long_entry - lp) / state.long_entry
+            if drop >= sl_pct:
+                log.warning(f"[{symbol}] 🛑 LONG SL Triggered! Drop: {drop * 100:.2f}%")
+                self._emergency_close(symbol, "LONG", state.long_amt)
+                self._cancel_orders_for_side(symbol, "LONG")
+                triggered = True
+
+        # SHORT
+        if state.short_amt > 0:
+            pump = (lp - state.short_entry) / state.short_entry
+            if pump >= sl_pct:
+                log.warning(f"[{symbol}] 🛑 SHORT SL Triggered! Pump: {pump * 100:.2f}%")
+                self._emergency_close(symbol, "SHORT", state.short_amt)
+                self._cancel_orders_for_side(symbol, "SHORT")
+                triggered = True
+
+        return triggered
 
     # --- STRATEGY ---
     def update_strategy_for_side(self, symbol, pos_side):
@@ -344,7 +391,7 @@ class HedgeBot:
         try:
             with self.lock:
                 self._cancel_orders_for_side(symbol, pos_side)
-                self._sync_all_positions()  # Синхроним всё (это быстро)
+                self._sync_all_positions()
 
                 is_l = (pos_side == "LONG")
                 amt = state.long_amt if is_l else state.short_amt
@@ -352,7 +399,7 @@ class HedgeBot:
                 force = False
 
                 if amt > state.info.min_qty:
-                    # Позиция есть
+                    # Позиция есть -> Тейк + Сетка усреднения
                     tp_pct = Config.TAKE_PROFIT_PCT
                     tp_p = entry * (1.0 + tp_pct) if is_l else entry * (1.0 - tp_pct)
                     tp_s = "SELL" if is_l else "BUY"
@@ -361,23 +408,20 @@ class HedgeBot:
                                                       reduce_only=True)
 
                     if err == -2022:
-                        force = True  # Позиции нет
+                        force = True  # Позиция закрыта на бирже
                     elif ok:
-                        log.info(f"[{symbol}] ⚙️ IN DEAL {pos_side}. Vol={amt}. TP @ {tp_p:.5f}")
+                        # Сетка усреднения (только лимитки)
                         base = self._recon(entry, amt, pos_side, symbol)
                         grid = self._calc_grid(base, pos_side)
-                        c = 0
                         for l in grid:
                             pl = (is_l and l.price < state.last_price * 0.9995) or \
                                  (not is_l and l.price > state.last_price * 1.0005)
                             if pl:
                                 s_s = "BUY" if is_l else "SELL"
-                                ok_o, _ = self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
-                                if ok_o: c += 1
-                        log.info(f"[{symbol}] ✅ Grid {pos_side}: {c} orders")
+                                self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
 
                 if amt <= state.info.min_qty or force:
-                    # Позиции нет
+                    # Позиции нет -> Стартовая сетка
                     if force:
                         if is_l:
                             state.long_amt = 0
@@ -390,16 +434,12 @@ class HedgeBot:
                     else:
                         state.short_grid_center = center
 
-                    log.info(f"[{symbol}] 🆕 START {pos_side} @ {center}")
                     grid = self._calc_grid(center, pos_side)
-                    c = 0
                     for l in grid:
                         valid = (is_l and l.price < center) or (not is_l and l.price > center)
                         if valid:
                             s_s = "BUY" if is_l else "SELL"
-                            ok_o, _ = self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
-                            if ok_o: c += 1
-                    log.info(f"[{symbol}] ✅ New Grid {pos_side}: {c} orders")
+                            self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
 
         except Exception as e:
             log.error(f"[{symbol}] ❌ Logic Error in {pos_side}: {e}")
@@ -407,7 +447,6 @@ class HedgeBot:
     def on_execution_event(self, d):
         sym = d['s']
         if sym not in self.states: return
-
         ps = d['ps']
         log.info(f"[{sym}] ⚡ EXEC {ps} {d['S']} {d['l']} @ {d['L']}")
         time.sleep(1.0)
@@ -445,7 +484,11 @@ class HedgeBot:
                     p = float(msg['p'])
                     with self.lock:
                         self.states[sym].last_price = p
-                        self.check_pagen_trailing(sym)
+                        # --- 1. Проверяем Стоп-Лосс ---
+                        sl_triggered = self.check_stop_loss(sym)
+                        # --- 2. Если живы, проверяем трейлинг ---
+                        if not sl_triggered:
+                            self.check_pagen_trailing(sym)
 
             elif msg['e'] == 'ORDER_TRADE_UPDATE':
                 sym = msg['o']['s']
@@ -455,46 +498,31 @@ class HedgeBot:
             pass
 
     def run_maintenance(self):
-        """Фоновый поток: пинг, продление ключа и АУДИТ ПОЗИЦИЙ"""
+        """Фоновый поток: пинг, аудит позиций, обновление ключей"""
         last_listen_key_renew = time.time()
-
         while self.running:
-            # 1. Продление ListenKey (раз в 30 мин)
             if time.time() - last_listen_key_renew > 1800:
                 try:
-                    self._keep_alive_listen_key()
-                    last_listen_key_renew = time.time()
+                    self._keep_alive_listen_key(); last_listen_key_renew = time.time()
                 except:
                     pass
 
-            # 2. AUDIT LOGIC (для всех символов)
+            # AUDIT: Если мы закрыли руками на бирже, бот должен узнать об этом
             try:
-                # Снимок "ДО"
-                old_states = {}
-                for s, state in self.states.items():
-                    old_states[s] = (state.long_amt, state.short_amt)
-
-                # Синхронизация
+                old_states = {s: (st.long_amt, st.short_amt) for s, st in self.states.items()}
                 self._sync_all_positions()
-
-                # Сравнение "ПОСЛЕ"
                 for s, state in self.states.items():
                     old_l, old_s = old_states[s]
-                    new_l, new_s = state.long_amt, state.short_amt
-                    min_q = state.info.min_qty
-
-                    if old_l > min_q and new_l <= min_q:
-                        log.info(f"[{s}] ♻️ MANUAL CLOSE LONG -> RESTART")
+                    # Если позиция исчезла (закрыли руками)
+                    if old_l > 0 and state.long_amt == 0:
+                        log.info(f"[{s}] ♻️ MANUAL CLOSE LONG DETECTED")
                         self.update_strategy_for_side(s, "LONG")
-
-                    elif old_s > min_q and new_s <= min_q:
-                        log.info(f"[{s}] ♻️ MANUAL CLOSE SHORT -> RESTART")
+                    if old_s > 0 and state.short_amt == 0:
+                        log.info(f"[{s}] ♻️ MANUAL CLOSE SHORT DETECTED")
                         self.update_strategy_for_side(s, "SHORT")
-
             except Exception as e:
                 log.error(f"Audit Error: {e}")
 
-            # 3. Пинг REST API
             try:
                 self._ping_rest()
             except:
@@ -505,7 +533,7 @@ class HedgeBot:
                 if not self.running: return
 
     def run(self):
-        log.info(f"🤖 BOT STARTED. Symbols: {Config.SYMBOLS}")
+        log.info(f"🤖 BOT STARTED (SAFE MODE). Symbols: {Config.SYMBOLS}")
         self.initialize()
 
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
@@ -513,18 +541,14 @@ class HedgeBot:
         self.listen_key = lk
         self.ws_client.user_data(listen_key=lk, id=1)
 
-        # Подписываемся на aggTrade для ВСЕХ символов
         for i, sym in enumerate(Config.SYMBOLS):
             self.ws_client.agg_trade(symbol=sym.lower(), id=i + 2)
 
         threading.Thread(target=self.run_maintenance, daemon=True).start()
 
-        # Ждем цены по всем символам
         log.info("⏳ Waiting for prices...")
-        while any(s.last_price == 0 for s in self.states.values()):
-            time.sleep(1)
+        while any(s.last_price == 0 for s in self.states.values()): time.sleep(1)
 
-        # Старт для всех
         for sym in Config.SYMBOLS:
             self.update_strategy_for_side(sym, "LONG")
             self.update_strategy_for_side(sym, "SHORT")
