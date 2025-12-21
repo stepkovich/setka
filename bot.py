@@ -38,21 +38,20 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     # ТОРГУЕМЫЕ ПАРЫ
-    SYMBOLS = ["DOGEUSDC", "1000PEPEUSDC"]
+    SYMBOLS = ["WIFUSDC", "1000PEPEUSDC", "SUIUSDC", "APTUSDC"]
 
     LEVERAGE = 10
 
-    # Стартовый ордер: $6
-    BASE_ORDER_SIZE = 6.0
+    # Стартовый ордер
+    BASE_ORDER_SIZE = 7.0
 
-    # --- СЕТКА (ОПТИМАЛЬНАЯ) ---
+    # --- СЕТКА  ---
     GRID_LEVELS = 6
 
     # Шаг 0.2% (Фибоначчи раздвинет его: 0.1% -> 0.1% -> 0.2% -> 0.3% -> 0.5%)
     FIB_STEP_BASE = 0.002
 
-    # Множитель объема 1.4 (Мягкая прогрессия)
-    # Ордера будут: $6 -> $8.4 -> $11.7 -> $16.4 -> $23.
+    # Множитель объема
     VOL_COEFF = 1.25
 
     # --- ВЫХОД ---
