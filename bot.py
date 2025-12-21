@@ -38,7 +38,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     # ТОРГУЕМЫЕ ПАРЫ
-    SYMBOLS = ["WIFUSDC", "1000PEPEUSDC", "SUIUSDC", "APTUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC", "WIFUSDC", "XRPUSDC"]
 
     LEVERAGE = 10
 
