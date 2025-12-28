@@ -55,7 +55,7 @@ class Config:
     VOL_COEFF = 1.25
 
     # --- ВЫХОД ---
-    TAKE_PROFIT_PCT = 0.002
+    TAKE_PROFIT_PCT = 0.0016
 
     # --- ЗАЩИТА (STOP LOSS) ---
     STOP_LOSS_PCT = 0.04
