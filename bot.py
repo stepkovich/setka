@@ -49,13 +49,13 @@ class Config:
     GRID_LEVELS = 6
 
     # Шаг 0.2% (Фибоначчи раздвинет его: 0.1% -> 0.1% -> 0.2% -> 0.3% -> 0.5%)
-    FIB_STEP_BASE = 0.002
+    FIB_STEP_BASE = 0.0015
 
     # Множитель объема
     VOL_COEFF = 1.25
 
     # --- ВЫХОД ---
-    TAKE_PROFIT_PCT = 0.0016
+    TAKE_PROFIT_PCT = 0.002
 
     # --- ЗАЩИТА (STOP LOSS) ---
     STOP_LOSS_PCT = 0.04
