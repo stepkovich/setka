@@ -349,6 +349,7 @@ class HedgeBot:
         self.client.time()
 
     # --- STOP LOSS LOGIC ---
+
     def check_stop_loss(self, symbol):
         """Проверка Стоп-Лосса на каждом тике"""
         state = self.states[symbol]
@@ -361,8 +362,13 @@ class HedgeBot:
             drop = (state.long_entry - lp) / state.long_entry
             if drop >= sl_pct:
                 log.warning(f"[{symbol}] 🛑 LONG SL Triggered! Drop: {drop * 100:.2f}%")
-                self._emergency_close(symbol, "LONG", state.long_amt)
+
+                # Сначала снимаем лимитки, которые блокируют позицию (ошибка ReduceOnly)
                 self._cancel_orders_for_side(symbol, "LONG")
+
+                # Теперь позиция свободна, бьем по рынку
+                self._emergency_close(symbol, "LONG", state.long_amt)
+
                 triggered = True
 
         # SHORT
@@ -370,8 +376,13 @@ class HedgeBot:
             pump = (lp - state.short_entry) / state.short_entry
             if pump >= sl_pct:
                 log.warning(f"[{symbol}] 🛑 SHORT SL Triggered! Pump: {pump * 100:.2f}%")
-                self._emergency_close(symbol, "SHORT", state.short_amt)
+
+                # Сначала снимаем лимитки
                 self._cancel_orders_for_side(symbol, "SHORT")
+
+                # Теперь позиция свободна, бьем по рынку
+                self._emergency_close(symbol, "SHORT", state.short_amt)
+
                 triggered = True
 
         return triggered
