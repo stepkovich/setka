@@ -38,7 +38,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     # ТОРГУЕМЫЕ ПАРЫ
-    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC", "1000SHIBUSDC", "ENAUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC", "DOGEUSDC", "ENAUSDC"]
 
     LEVERAGE = 10
 
@@ -150,7 +150,8 @@ class HedgeBot:
         self.listen_key = None
 
     def initialize(self):
-        log.info("🔹 Init SAFE Bot (StopLoss 2.5%, Grid 3 Lvls)...")
+        log.info(f"🔹 Params (TP {Config.TAKE_PROFIT_PCT *100}%, SL {Config.STOP_LOSS_PCT * 100}%, "
+                 f"Grid {Config.GRID_LEVELS} levels)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
 
         try:
