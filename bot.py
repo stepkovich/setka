@@ -38,27 +38,27 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     # ТОРГУЕМЫЕ ПАРЫ
-    SYMBOLS = ["XRPUSDC", "SUIUSDC", "DOGEUSDC", "SOLUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC", "WIFUSDC", "XRPUSDC"]
 
     LEVERAGE = 10
 
     # Стартовый ордер
-    BASE_ORDER_SIZE = 8.0
+    BASE_ORDER_SIZE = 7.0
 
     # --- СЕТКА  ---
-    GRID_LEVELS = 10
+    GRID_LEVELS = 6
 
     # Шаг 0.2% (Фибоначчи раздвинет его: 0.1% -> 0.1% -> 0.2% -> 0.3% -> 0.5%)
-    FIB_STEP_BASE = 0.00025
+    FIB_STEP_BASE = 0.002
 
     # Множитель объема
-    VOL_COEFF = 1.05
+    VOL_COEFF = 1.25
 
     # --- ВЫХОД ---
     TAKE_PROFIT_PCT = 0.002
 
     # --- ЗАЩИТА (STOP LOSS) ---
-    STOP_LOSS_PCT = 0.05
+    STOP_LOSS_PCT = 0.04
 
     # Трейлинг входа шага
     PAGEN = 1
