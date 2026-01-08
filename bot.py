@@ -5,9 +5,10 @@ import logging
 import threading
 import signal
 import json
+import urllib.parse
 from decimal import Decimal, getcontext, ROUND_HALF_UP, ROUND_FLOOR
 from typing import Optional, List, Dict, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import wraps
 
 # Libs
@@ -18,17 +19,17 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 from dotenv import load_dotenv
 
 # ==========================================
-# 0. CONFIG (SAFE SCALPING MODE)
+# 0. CONFIG & PRECISION
 # ==========================================
 load_dotenv()
-getcontext().prec = 28
+getcontext().prec = 50
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("SAFE_BOT")
+log = logging.getLogger("HEDGE_ULTIMATE")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -36,72 +37,39 @@ logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-
-    # ТОРГУЕМЫЕ ПАРЫ
-    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC", "WIFUSDC", "XRPUSDC"]
-
-    LEVERAGE = 10
-
-    # Стартовый ордер
-    BASE_ORDER_SIZE = 7.0
-
-    # --- СЕТКА  ---
-    GRID_LEVELS = 6
-
-    # Шаг 0.2% (Фибоначчи раздвинет его: 0.1% -> 0.1% -> 0.2% -> 0.3% -> 0.5%)
-    FIB_STEP_BASE = 0.002
-
-    # Множитель объема
-    VOL_COEFF = 1.25
-
-    # --- ВЫХОД ---
-    TAKE_PROFIT_PCT = 0.002
-
-    # --- ЗАЩИТА (STOP LOSS) ---
-    STOP_LOSS_PCT = 0.04
-
-    # Трейлинг входа шага
-    PAGEN = 1
-
-    RECONNECT_DELAY = 5
+    SYMBOLS = ["1000PEPEUSDC"]
+    LEVERAGE = 16
+    BASE_ORDER_SIZE = Decimal("10.0")
+    GRID_LEVELS = 16
+    FIB_STEP_BASE = Decimal("0.00015")
+    VOL_COEFF = Decimal("80.0")
+    TAKE_PROFIT_PCT = Decimal("0.0007")
+    PAGEN = 3
     WATCHDOG_TIMEOUT = 60
 
 
 @dataclass
 class SymbolPrecision:
-    tick_size: float
-    step_size: float
-    min_qty: float
-    min_notional: float
+    tick_size: Decimal
+    step_size: Decimal
+    min_qty: Decimal
+    min_notional: Decimal
     price_precision: int
     qty_precision: int
-
-
-@dataclass
-class GridLevel:
-    level_index: int
-    price: float
-    qty: float
-    vol_usd: float
-    dist_pct: float
 
 
 @dataclass
 class SymbolState:
     symbol: str
     info: SymbolPrecision
-
-    last_price: float = 0.0
-
-    long_amt: float = 0.0
-    long_entry: float = 0.0
-    short_amt: float = 0.0
-    short_entry: float = 0.0
-
-    long_grid_center: float = 0.0
-    short_grid_center: float = 0.0
-
-    trailing_threshold_pct: float = 0.0
+    last_price: Decimal = Decimal("0")
+    long_amt: Decimal = Decimal("0")
+    long_entry: Decimal = Decimal("0")
+    short_amt: Decimal = Decimal("0")
+    short_entry: Decimal = Decimal("0")
+    long_grid_center: Decimal = Decimal("0")
+    short_grid_center: Decimal = Decimal("0")
+    trailing_threshold_pct: Decimal = Decimal("0")
 
 
 # ==========================================
@@ -111,24 +79,20 @@ def retry_request(max_retries=3, delay=1.0):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            last_exception = None
+            last_err = None
             for i in range(max_retries):
                 try:
                     return func(*args, **kwargs)
                 except (ConnectionError, Timeout, RequestException) as e:
-                    if i == 0:
-                        log.info(f"⚠️ Network glitch in {func.__name__}, retrying...")
-                    else:
-                        log.warning(f"⚠️ Retry {i + 1}/{max_retries}: {e}")
-                    time.sleep(delay)
-                    last_exception = e
+                    time.sleep(delay);
+                    last_err = e
                 except ClientError as e:
-                    raise e
-                except Exception as e:
-                    log.error(f"❌ Unknown Error in {func.__name__}: {e}")
-                    raise e
-            if last_exception:
-                raise last_exception
+                    if int(e.status_code) >= 500:
+                        time.sleep(delay);
+                        last_err = e
+                    else:
+                        raise e
+            if last_err: raise last_err
 
         return wrapper
 
@@ -144,66 +108,43 @@ class HedgeBot:
         self.lock = threading.RLock()
         self.client: Optional[UMFutures] = None
         self.ws_client: Optional[UMFuturesWebsocketClient] = None
-
         self.states: Dict[str, SymbolState] = {}
         self.last_ws_update = time.time()
         self.listen_key = None
 
     def initialize(self):
-        log.info(f"🔹 Params (TP {Config.TAKE_PROFIT_PCT *100}%, SL {Config.STOP_LOSS_PCT * 100}%, "
-                 f"Grid {Config.GRID_LEVELS} levels)...")
+        log.info("🔹 Starting Bot (Bypassing SDK bugs)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
-
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
-
-            # 1. Загружаем инфо
-            exchange_info = self.client.exchange_info()
-            all_symbols_info = {s['symbol']: s for s in exchange_info['symbols']}
-
-            # 2. Инициализируем стейты
+            ex_info = self.client.exchange_info()
+            all_info = {s['symbol']: s for s in ex_info['symbols']}
             for sym in Config.SYMBOLS:
-                if sym not in all_symbols_info:
-                    log.error(f"❌ Symbol {sym} not found!")
-                    continue
-
-                s_info = all_symbols_info[sym]
+                if sym not in all_info: continue
+                s_info = all_info[sym]
                 p_f = next(f for f in s_info['filters'] if f['filterType'] == 'PRICE_FILTER')
                 l_f = next(f for f in s_info['filters'] if f['filterType'] == 'LOT_SIZE')
                 n_f = next((f for f in s_info['filters'] if f['filterType'] in ['MIN_NOTIONAL', 'NOTIONAL']), None)
-                mn = 5.0
+                mn = Decimal("5.0")
                 if n_f:
                     if 'notional' in n_f:
-                        mn = float(n_f['notional'])
+                        mn = Decimal(str(n_f['notional']))
                     elif 'minNotional' in n_f:
-                        mn = float(n_f['minNotional'])
-
-                precision = SymbolPrecision(
-                    tick_size=float(p_f['tickSize']), step_size=float(l_f['stepSize']),
-                    min_qty=float(l_f['minQty']), min_notional=mn,
-                    price_precision=s_info['pricePrecision'], qty_precision=s_info['quantityPrecision']
+                        mn = Decimal(str(n_f['minNotional']))
+                prec = SymbolPrecision(
+                    tick_size=Decimal(str(p_f['tickSize'])), step_size=Decimal(str(l_f['stepSize'])),
+                    min_qty=Decimal(str(l_f['minQty'])), min_notional=mn,
+                    price_precision=int(s_info['pricePrecision']), qty_precision=int(s_info['quantityPrecision'])
                 )
-
-                dist = sum(Config.FIB_STEP_BASE * f for f in self._fib(Config.PAGEN))
-
-                self.states[sym] = SymbolState(
-                    symbol=sym,
-                    info=precision,
-                    trailing_threshold_pct=dist
-                )
-
+                dist = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.PAGEN))
+                self.states[sym] = SymbolState(symbol=sym, info=prec, trailing_threshold_pct=dist)
                 self._setup_account(sym)
-                ticker = self.client.ticker_price(symbol=sym)
-                self.states[sym].last_price = float(ticker['price'])
-                log.info(f"✅ Loaded {sym}: Price={self.states[sym].last_price}")
-
-            # 3. Синхронизируем позиции
-            self._sync_all_positions()
-            self._ping_rest()
-
+                ticker = self.client.ticker_price(sym)
+                self.states[sym].last_price = Decimal(str(ticker['price']))
+            self._sync_all_positions_rest()
+            log.info("✅ Sync position done")
         except Exception as e:
-            log.critical(f"Init Fail: {e}");
-            sys.exit(1)
+            log.critical(f"Init Fail: {e}"); sys.exit(1)
 
     def _setup_account(self, symbol):
         try:
@@ -212,361 +153,232 @@ class HedgeBot:
                 if not m['dualSidePosition']: self.client.change_position_mode(dualSidePosition="true")
             except:
                 pass
-            self.client.change_leverage(symbol=symbol, leverage=Config.LEVERAGE)
+            self.client.change_leverage(symbol, Config.LEVERAGE)
         except Exception as e:
-            log.warning(f"⚠️ Setup account {symbol}: {e}")
+            log.warning(f"⚠️ Setup {symbol}: {e}")
 
-    # --- MATH ---
-    def _fib(self, n):
+    # --- MATH (DECIMAL) ---
+    def _fib(self, n: int) -> List[int]:
         seq = [1, 1]
         for i in range(2, n): seq.append(seq[-1] + seq[-2])
         return seq[:n]
 
-    def _calc_grid(self, base, direction):
+    def _calc_grid(self, base: Decimal, direction: str) -> List[Tuple[Decimal, Decimal, Decimal, Decimal]]:
         lvls = []
-        fib = self._fib(Config.GRID_LEVELS)
-        cum = 0.0
-
-        # Объем растет геометрически: Base -> Base*1.5 -> Base*1.5*1.5
-        current_usd = Config.BASE_ORDER_SIZE
-
+        fib_seq = self._fib(Config.GRID_LEVELS)
+        cum_dist = Decimal("0")
         for i in range(Config.GRID_LEVELS):
-            step = Config.FIB_STEP_BASE * fib[i]
-            cum += step
-            p = base * (1.0 - cum) if direction == "LONG" else base * (1.0 + cum)
-
-            # Новый объем = Старый * Коэффициент
-            current_usd = current_usd * Config.VOL_COEFF
-
-            qty = current_usd / p
-            lvls.append(GridLevel(i + 1, p, qty, current_usd, cum))
+            step = Config.FIB_STEP_BASE * Decimal(str(fib_seq[i]))
+            cum_dist += step
+            price = base * (Decimal("1.0") - cum_dist) if direction == "LONG" else base * (Decimal("1.0") + cum_dist)
+            multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
+            vol_usd = Config.BASE_ORDER_SIZE * multiplier
+            qty = vol_usd / price
+            lvls.append((price, qty, vol_usd, cum_dist))
         return lvls
 
-    def _recon(self, avg, qty, direction, symbol):
-        state = self.states[symbol]
-        if qty == 0: return state.last_price
+    def _recon(self, avg_entry: Decimal, qty: Decimal, direction: str, symbol: str) -> Decimal:
+        if qty == Decimal("0"): return self.states[symbol].last_price
+        grid = self._calc_grid(avg_entry, direction)
+        filled = []
+        acc_vol = Decimal("0")
+        target_vol = qty * avg_entry
+        for p, q, v, d in grid:
+            filled.append((v, d));
+            acc_vol += v
+            if acc_vol >= target_vol * Decimal("0.9"): break
+        if not filled: return avg_entry
+        num = sum(v * d for v, d in filled)
+        den = sum(v for v, d in filled)
+        avg_dist = num / den if den > 0 else Decimal("0")
+        return avg_entry / (Decimal("1.0") - avg_dist) if direction == "LONG" else avg_entry / (
+                    Decimal("1.0") + avg_dist)
 
-        temp = self._calc_grid(avg, direction)
-        filled = [];
-        acc = 0.0;
-        tgt = qty * avg
+    def _rp(self, p: Decimal, info: SymbolPrecision) -> str:
+        val = (p / info.tick_size).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * info.tick_size
+        return "{:.{prec}f}".format(val, prec=info.price_precision)
 
-        for l in temp:
-            filled.append(l);
-            acc += l.vol_usd
-            if acc >= tgt * 0.9: break
+    def _rq(self, q: Decimal, info: SymbolPrecision) -> str:
+        val = (q / info.step_size).quantize(Decimal('1'), rounding=ROUND_FLOOR) * info.step_size
+        return "{:.{prec}f}".format(val, prec=info.qty_precision)
 
-        if not filled: return avg
-        num = sum(l.vol_usd * l.dist_pct for l in filled)
-        den = sum(l.vol_usd for l in filled)
-        d = num / den if den > 0 else 0
-        return avg / (1.0 - d) if direction == "LONG" else avg / (1.0 + d)
-
-    def _rp(self, p, info: SymbolPrecision):
-        return float(
-            (Decimal(str(p)) / Decimal(str(info.tick_size))).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * Decimal(
-                str(info.tick_size)))
-
-    def _rq(self, q, info: SymbolPrecision):
-        return float(
-            (Decimal(str(q)) / Decimal(str(info.step_size))).quantize(Decimal('1'), rounding=ROUND_FLOOR) * Decimal(
-                str(info.step_size)))
-
-    # --- API ---
+    # --- DIRECT API CALLS (BYPASSING SDK BUGS) ---
     @retry_request(max_retries=3)
-    def _cancel_orders_for_side(self, symbol, pos_side):
-        orders = self.client.get_orders(symbol=symbol)
-        to_cancel = [o['orderId'] for o in orders if o['positionSide'] == pos_side]
-        for oid in to_cancel:
-            try:
-                self.client.cancel_order(symbol=symbol, orderId=oid)
-            except:
-                pass
+    def _safe_get_open_orders(self, symbol):
+        return self.client.sign_request("GET", "/fapi/v1/openOrders", {"symbol": symbol})
 
     @retry_request(max_retries=3)
-    def _place_limit_order(self, symbol, side, pos_side, qty, price, is_maker=True, reduce_only=False):
-        state = self.states[symbol]
-        info = state.info
-        fp = self._rp(price, info)
-        fq = self._rq(qty, info)
-
-        if fq < info.min_qty or (fp * fq) < info.min_notional:
-            return False, 0
-
-        params = {
-            "symbol": symbol, "side": side, "positionSide": pos_side,
-            "type": "LIMIT", "quantity": fq, "price": fp,
-            "timeInForce": "GTX" if is_maker else "GTC"
-        }
-        try:
-            self.client.new_order(**params)
-            return True, 0
-        except ClientError as e:
-            return False, e.error_code
+    def _cancel_side_orders(self, symbol, pos_side):
+        all_open = self._safe_get_open_orders(symbol)
+        ids = [o['orderId'] for o in all_open if o['positionSide'] == pos_side]
+        if not ids: return
+        for i in range(0, len(ids), 10):
+            chunk = ids[i: i + 10]
+            # Прямой вызов DELETE /fapi/v1/batchOrders
+            params = {"symbol": symbol, "orderIdList": json.dumps(chunk)}
+            self.client.sign_request("DELETE", "/fapi/v1/batchOrders", params)
 
     @retry_request(max_retries=3)
-    def _emergency_close(self, symbol, pos_side, qty):
-        """Мгновенное закрытие по рынку (STOP LOSS)"""
-        # Здесь нельзя использовать лимитки, т.к. при обвале рынка лимитка может не сработать.
-        # Безопасность депозита важнее комиссии Taker.
-        side = "SELL" if pos_side == "LONG" else "BUY"
-        try:
-            self.client.new_order(
-                symbol=symbol, side=side, positionSide=pos_side,
-                type="MARKET", quantity=qty
-            )
-            log.warning(f"[{symbol}] 🚨 EMERGENCY STOP LOSS EXECUTED ({pos_side})")
-        except Exception as e:
-            log.error(f"[{symbol}] ❌ Failed to exec Stop Loss: {e}")
+    def _place_batch(self, symbol, params_list):
+        if not params_list: return
+        for i in range(0, len(params_list), 5):
+            chunk = params_list[i: i + 5]
+            # Прямой вызов POST /fapi/v1/batchOrders
+            # ВАЖНО: batchOrders должен быть JSON-строкой
+            query = {"symbol": symbol, "batchOrders": json.dumps(chunk)}
+            self.client.sign_request("POST", "/fapi/v1/batchOrders", query)
 
     @retry_request(max_retries=3)
-    def _sync_all_positions(self):
-        positions = self.client.get_position_risk()
-        # Сброс локальных данных
-        for state in self.states.values():
-            state.long_amt = 0.0
-            state.short_amt = 0.0
+    def _sync_all_positions_rest(self):
+        pos_data = self.client.get_position_risk()
+        with self.lock:
+            for s in self.states.values():
+                s.long_amt = Decimal("0");
+                s.short_amt = Decimal("0")
+            for p in pos_data:
+                sym = p['symbol']
+                if sym in self.states:
+                    amt, ent = Decimal(str(p['positionAmt'])), Decimal(str(p['entryPrice']))
+                    if p['positionSide'] == "LONG":
+                        self.states[sym].long_amt, self.states[sym].long_entry = amt, ent
+                    elif p['positionSide'] == "SHORT":
+                        self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
 
-        for p in positions:
-            sym = p['symbol']
-            if sym in self.states:
-                state = self.states[sym]
-                amt = float(p['positionAmt'])
-                entry = float(p['entryPrice'])
-                if p['positionSide'] == "LONG":
-                    state.long_amt = amt;
-                    state.long_entry = entry
-                elif p['positionSide'] == "SHORT":
-                    state.short_amt = abs(amt);
-                    state.short_entry = entry
-
-    @retry_request(max_retries=3)
-    def _keep_alive_listen_key(self):
-        if self.listen_key: self.client.renew_listen_key(listenKey=self.listen_key)
-
-    @retry_request(max_retries=3)
-    def _ping_rest(self):
-        self.client.time()
-
-    # --- STOP LOSS LOGIC ---
-
-    def check_stop_loss(self, symbol):
-        """Проверка Стоп-Лосса на каждом тике"""
-        state = self.states[symbol]
-        lp = state.last_price
-        sl_pct = Config.STOP_LOSS_PCT
-        triggered = False
-
-        # LONG
-        if state.long_amt > 0:
-            drop = (state.long_entry - lp) / state.long_entry
-            if drop >= sl_pct:
-                log.warning(f"[{symbol}] 🛑 LONG SL Triggered! Drop: {drop * 100:.2f}%")
-
-                # Сначала снимаем лимитки, которые блокируют позицию (ошибка ReduceOnly)
-                self._cancel_orders_for_side(symbol, "LONG")
-
-                # Теперь позиция свободна, бьем по рынку
-                self._emergency_close(symbol, "LONG", state.long_amt)
-
-                triggered = True
-
-        # SHORT
-        if state.short_amt > 0:
-            pump = (lp - state.short_entry) / state.short_entry
-            if pump >= sl_pct:
-                log.warning(f"[{symbol}] 🛑 SHORT SL Triggered! Pump: {pump * 100:.2f}%")
-
-                # Сначала снимаем лимитки
-                self._cancel_orders_for_side(symbol, "SHORT")
-
-                # Теперь позиция свободна, бьем по рынку
-                self._emergency_close(symbol, "SHORT", state.short_amt)
-
-                triggered = True
-
-        return triggered
-
-    # --- STRATEGY ---
+    # --- CORE LOGIC ---
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
         state = self.states[symbol]
-
+        info = state.info
         try:
             with self.lock:
-                self._cancel_orders_for_side(symbol, pos_side)
-                self._sync_all_positions()
-
+                self._cancel_side_orders(symbol, pos_side)
                 is_l = (pos_side == "LONG")
-                amt = state.long_amt if is_l else state.short_amt
-                entry = state.long_entry if is_l else state.short_entry
-                force = False
+                amt, entry = (state.long_amt, state.long_entry) if is_l else (state.short_amt, state.short_entry)
 
-                if amt > state.info.min_qty:
-                    # Позиция есть -> Тейк + Сетка усреднения
-                    tp_pct = Config.TAKE_PROFIT_PCT
-                    tp_p = entry * (1.0 + tp_pct) if is_l else entry * (1.0 - tp_pct)
-                    tp_s = "SELL" if is_l else "BUY"
+                if amt > info.min_qty:
+                    tp_p = entry * (Decimal("1.0") + Config.TAKE_PROFIT_PCT) if is_l else entry * (
+                                Decimal("1.0") - Config.TAKE_PROFIT_PCT)
+                    tp_ps, tp_qs = self._rp(tp_p, info), self._rq(amt, info)
+                    try:
+                        self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
+                                              type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
+                        log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
+                    except ClientError as e:
+                        if e.error_code == -2022: amt = Decimal("0")
 
-                    ok, err = self._place_limit_order(symbol, tp_s, pos_side, amt, tp_p, is_maker=False,
-                                                      reduce_only=True)
+                    if amt > 0:
+                        recon_base = self._recon(entry, amt, pos_side, symbol)
+                        grid = self._calc_grid(recon_base, pos_side)
+                        batch = []
+                        for p, q, v, d in grid:
+                            if (is_l and p < state.last_price * Decimal("0.9997")) or (
+                                    not is_l and p > state.last_price * Decimal("1.0003")):
+                                ps, qs = self._rp(p, info), self._rq(q, info)
+                                if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                                    batch.append(
+                                        {"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
+                                         "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
+                        self._place_batch(symbol, batch)
 
-                    if err == -2022:
-                        force = True  # Позиция закрыта на бирже
-                    elif ok:
-                        # Сетка усреднения (только лимитки)
-                        base = self._recon(entry, amt, pos_side, symbol)
-                        grid = self._calc_grid(base, pos_side)
-                        for l in grid:
-                            pl = (is_l and l.price < state.last_price * 0.9995) or \
-                                 (not is_l and l.price > state.last_price * 1.0005)
-                            if pl:
-                                s_s = "BUY" if is_l else "SELL"
-                                self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
-
-                if amt <= state.info.min_qty or force:
-                    # Позиции нет -> Стартовая сетка
-                    if force:
-                        if is_l:
-                            state.long_amt = 0
-                        else:
-                            state.short_amt = 0
-
+                if amt <= info.min_qty:
                     center = state.last_price
                     if is_l:
                         state.long_grid_center = center
                     else:
                         state.short_grid_center = center
-
+                    log.info(f"[{symbol}] 🆕 Start {pos_side} @ {center}")
                     grid = self._calc_grid(center, pos_side)
-                    for l in grid:
-                        valid = (is_l and l.price < center) or (not is_l and l.price > center)
-                        if valid:
-                            s_s = "BUY" if is_l else "SELL"
-                            self._place_limit_order(symbol, s_s, pos_side, l.qty, l.price, is_maker=True)
-
+                    batch = []
+                    for p, q, v, d in grid:
+                        ps, qs = self._rp(p, info), self._rq(q, info)
+                        if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                            batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
+                                          "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
+                    self._place_batch(symbol, batch)
         except Exception as e:
-            log.error(f"[{symbol}] ❌ Logic Error in {pos_side}: {e}")
+            log.error(f"[{symbol}] ❌ Strategy Error {pos_side}: {e}")
 
-    def on_execution_event(self, d):
-        sym = d['s']
-        if sym not in self.states: return
-        ps = d['ps']
-        log.info(f"[{sym}] ⚡ EXEC {ps} {d['S']} {d['l']} @ {d['L']}")
-        time.sleep(1.0)
-        self.update_strategy_for_side(sym, ps)
-
-        opp = "SHORT" if ps == "LONG" else "LONG"
-        with self.lock:
-            state = self.states[sym]
-            oa = state.long_amt if opp == "LONG" else state.short_amt
-            if oa == 0: self.update_strategy_for_side(sym, opp)
-
-    def check_pagen_trailing(self, symbol):
-        state = self.states[symbol]
-        th = state.trailing_threshold_pct
-
-        if state.long_amt == 0 and state.long_grid_center > 0:
-            if (state.last_price - state.long_grid_center) / state.long_grid_center > th:
-                log.info(f"[{symbol}] 🏃 LONG TRAIL")
-                self.update_strategy_for_side(symbol, "LONG")
-
-        if state.short_amt == 0 and state.short_grid_center > 0:
-            if (state.short_grid_center - state.last_price) / state.short_grid_center > th:
-                log.info(f"[{symbol}] 🏃 SHORT TRAIL")
-                self.update_strategy_for_side(symbol, "SHORT")
-
+    # --- WEB SOCKET ---
     def on_ws_msg(self, _, m):
         try:
             msg = json.loads(m) if isinstance(m, str) else m
-            if 'e' not in msg: return
             self.last_ws_update = time.time()
-
-            if msg['e'] == 'aggTrade':
-                sym = msg['s']
-                if sym in self.states:
-                    p = float(msg['p'])
+            e = msg.get('e')
+            if e == 'aggTrade':
+                s = msg['s']
+                if s in self.states:
+                    price = Decimal(str(msg['p']))
                     with self.lock:
-                        self.states[sym].last_price = p
-                        # --- 1. Проверяем Стоп-Лосс ---
-                        sl_triggered = self.check_stop_loss(sym)
-                        # --- 2. Если живы, проверяем трейлинг ---
-                        if not sl_triggered:
-                            self.check_pagen_trailing(sym)
-
-            elif msg['e'] == 'ORDER_TRADE_UPDATE':
-                sym = msg['o']['s']
-                if sym in self.states and msg['o']['X'] == 'FILLED':
-                    threading.Thread(target=self.on_execution_event, args=(msg['o'],)).start()
+                        st = self.states[s];
+                        st.last_price = price
+                        th = st.trailing_threshold_pct
+                        if st.long_amt == 0 and st.long_grid_center > 0:
+                            if (price - st.long_grid_center) / st.long_grid_center > th:
+                                st.long_grid_center = price
+                                threading.Thread(target=self.update_strategy_for_side, args=(s, "LONG"),
+                                                 daemon=True).start()
+                        if st.short_amt == 0 and st.short_grid_center > 0:
+                            if (st.short_grid_center - price) / st.short_grid_center > th:
+                                st.short_grid_center = price
+                                threading.Thread(target=self.update_strategy_for_side, args=(s, "SHORT"),
+                                                 daemon=True).start()
+            elif e == 'ORDER_TRADE_UPDATE':
+                o = msg['o']
+                if o['X'] == 'FILLED' and o['s'] in self.states:
+                    log.info(f"[{o['s']}] ⚡ FILLED {o['ps']} {o['S']}")
+                    threading.Thread(target=self.update_strategy_for_side, args=(o['s'], o['ps']), daemon=True).start()
+            elif e == 'ACCOUNT_UPDATE':
+                for p in msg['a']['P']:
+                    sym = p['s']
+                    if sym in self.states:
+                        with self.lock:
+                            amt, ent, ps = Decimal(str(p['pa'])), Decimal(str(p['ep'])), p['ps']
+                            if ps == "LONG":
+                                self.states[sym].long_amt, self.states[sym].long_entry = amt, ent
+                            elif ps == "SHORT":
+                                self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
         except:
             pass
 
     def run_maintenance(self):
-        """Фоновый поток: пинг, аудит позиций, обновление ключей"""
-        last_listen_key_renew = time.time()
+        last_renew = last_audit = time.time()
         while self.running:
-            if time.time() - last_listen_key_renew > 1800:
-                try:
-                    self._keep_alive_listen_key(); last_listen_key_renew = time.time()
-                except:
-                    pass
-
-            # AUDIT: Если мы закрыли руками на бирже, бот должен узнать об этом
             try:
-                old_states = {s: (st.long_amt, st.short_amt) for s, st in self.states.items()}
-                self._sync_all_positions()
-                for s, state in self.states.items():
-                    old_l, old_s = old_states[s]
-                    # Если позиция исчезла (закрыли руками)
-                    if old_l > 0 and state.long_amt == 0:
-                        log.info(f"[{s}] ♻️ MANUAL CLOSE LONG DETECTED")
-                        self.update_strategy_for_side(s, "LONG")
-                    if old_s > 0 and state.short_amt == 0:
-                        log.info(f"[{s}] ♻️ MANUAL CLOSE SHORT DETECTED")
-                        self.update_strategy_for_side(s, "SHORT")
-            except Exception as e:
-                log.error(f"Audit Error: {e}")
-
-            try:
-                self._ping_rest()
+                if time.time() - last_renew > 1800:
+                    self.client.renew_listen_key(self.listen_key);
+                    last_renew = time.time()
+                if time.time() - last_audit > 60:
+                    self._sync_all_positions_rest();
+                    last_audit = time.time()
+                self.client.time()
             except:
                 pass
-
-            for _ in range(45):
-                time.sleep(1)
-                if not self.running: return
+            time.sleep(30)
 
     def run(self):
-        log.info(f"🤖 BOT STARTED (SAFE MODE). Symbols: {Config.SYMBOLS}")
+        log.info(f"🚀 Bot starting: {Config.SYMBOLS}")
         self.initialize()
-
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
-        lk = self.client.new_listen_key()['listenKey']
-        self.listen_key = lk
-        self.ws_client.user_data(listen_key=lk, id=1)
-
-        for i, sym in enumerate(Config.SYMBOLS):
-            self.ws_client.agg_trade(symbol=sym.lower(), id=i + 2)
-
+        self.listen_key = self.client.new_listen_key()['listenKey']
+        self.ws_client.user_data(listen_key=self.listen_key)
+        for sym in Config.SYMBOLS: self.ws_client.agg_trade(symbol=sym.lower())
         threading.Thread(target=self.run_maintenance, daemon=True).start()
 
-        log.info("⏳ Waiting for prices...")
-        while any(s.last_price == 0 for s in self.states.values()): time.sleep(1)
+        def watchdog():
+            while self.running:
+                if time.time() - self.last_ws_update > Config.WATCHDOG_TIMEOUT:
+                    log.critical("🚨 WebSocket Dead!");
+                    os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(10)
 
+        threading.Thread(target=watchdog, daemon=True).start()
         for sym in Config.SYMBOLS:
-            self.update_strategy_for_side(sym, "LONG")
+            self.update_strategy_for_side(sym, "LONG");
             self.update_strategy_for_side(sym, "SHORT")
-
-        threading.Thread(target=lambda: [time.sleep(10) or (os.kill(os.getpid(),
-                                                                    signal.SIGINT) if time.time() - self.last_ws_update > Config.WATCHDOG_TIMEOUT else None)
-                                         for _ in iter(int, 1)], daemon=True).start()
-
         try:
             while self.running: time.sleep(1)
         except KeyboardInterrupt:
-            self.running = False;
-            self.ws_client.stop();
-            sys.exit(0)
+            self.running = False; self.ws_client.stop()
 
 
 if __name__ == "__main__":
