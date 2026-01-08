@@ -39,7 +39,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
     SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 16
-    BASE_ORDER_SIZE = Decimal("6.5")
+    BASE_ORDER_SIZE = Decimal("8.0")
     GRID_LEVELS = 16
     FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("80.0")
