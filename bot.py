@@ -37,7 +37,7 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC"]
+    SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 16
 
     # --- ДИНАМИЧЕСКИЙ РИСК-МЕНЕДЖМЕНТ ---
@@ -47,8 +47,8 @@ class Config:
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("8.0")
 
     # Коридор для автоматического ордера
-    MIN_ORDER_SIZE = Decimal("5.2")  # Меньше биржа не примет
-    MAX_ORDER_SIZE = Decimal("10.0")  # потолок на одну монету
+    MIN_ORDER_SIZE = Decimal("7.11")  # Меньше биржа не примет
+    MAX_ORDER_SIZE = Decimal("7.5")  # потолок на одну монету
 
     GRID_LEVELS = 16
     FIB_STEP_BASE = Decimal("0.00015")
