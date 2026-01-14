@@ -37,7 +37,7 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "SUIUSDC"]
+    SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 25
 
     # --- ДИНАМИЧЕСКИЙ РИСК-МЕНЕДЖМЕНТ (Для 15 уровней) ---
