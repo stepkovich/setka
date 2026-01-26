@@ -10,7 +10,7 @@ services:
       # Можно переопределить настройки тут, если нужно
       - LOG_LEVEL=INFO
     volumes:
-      - ./bot.py:/app/bot.py
+      - .:/app
     logging:
       driver: "json-file"
       options:
