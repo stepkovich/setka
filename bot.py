@@ -37,14 +37,14 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["SUIUSDC","DOGEUSDC", "1000PEPEUSDC", "SOLUSDC", "XRPUSDC", "ENAUSDC", "ADAUSDC"]
+    SYMBOLS = ["DOGEUSDC", "PEPEUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ (Для 15 уровней и 25 плеча ---- 10) ---
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("6.5")
 
     MIN_ORDER_SIZE = Decimal("5.5")
-    MAX_ORDER_SIZE = Decimal("5.5")
+    MAX_ORDER_SIZE = Decimal("6")
 
     GRID_LEVELS = 14
     FIB_STEP_BASE = Decimal("0.00015")
