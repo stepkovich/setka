@@ -53,7 +53,7 @@ class Config:
     PAGEN = 3
 
     # --- СТОП-ЛОСС (1.5% за пределами 15-го уровня) ---
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.15")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 60
