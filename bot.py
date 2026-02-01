@@ -44,7 +44,7 @@ class Config:
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("6.5")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("6")
+    MAX_ORDER_SIZE = Decimal("25")
 
     GRID_LEVELS = 14
     FIB_STEP_BASE = Decimal("0.00015")
