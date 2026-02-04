@@ -40,7 +40,9 @@ class Config:
     SYMBOLS = ["SUIUSDC", "DOGEUSDC", "1000PEPEUSDC", "XRPUSDC", "ENAUSDC", "ADAUSDC"]
     LEVERAGE = 25
 
-    # --- РИСК-МЕНЕДЖМЕНТ (Для 15 уровней и 25 плеча ---- 10) ---
+    # --- РИСК-МЕНЕДЖМЕНТ (Для 15 уровней ---- 10
+    #                          14 - 6,5
+    #                          13 - 5,5) ---
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("5")
 
     MIN_ORDER_SIZE = Decimal("5.2")
