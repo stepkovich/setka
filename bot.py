@@ -50,7 +50,7 @@ class Config:
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("80.0")
-    TAKE_PROFIT_PCT = Decimal("0.0005")
+    TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
 
     # --- СТОП-ЛОСС (1.5% за пределами 15-го уровня) ---
@@ -130,7 +130,7 @@ class HedgeBot:
         self.listen_key = None
 
     def initialize(self):
-        log.info("🔹 Starting Ultimate Bot (15 Levels + Full Memory + SL)...")
+        log.info(f"🔹 Starting Bot (GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS})")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
@@ -440,7 +440,8 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Starting Bot. Persistence + SL Active. Symbols: {Config.SYMBOLS}")
+        log.info(f"🚀 Starting Bot! GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS}, "
+                 f"S/L: {int(Config.STOP_LOSS_BEYOND_GRID_PCT)*100}%")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
