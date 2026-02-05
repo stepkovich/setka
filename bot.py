@@ -50,7 +50,7 @@ class Config:
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("80.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
 
     # --- СТОП-ЛОСС (1.5% за пределами 15-го уровня) ---
