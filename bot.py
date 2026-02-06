@@ -41,7 +41,7 @@ class Config:
 
     # --- РИСК-МЕНЕДЖМЕНТ (Для 15 уровней ---- 10
     #                          14 - 6,5
-    #                          13 - 5,5) ---
+    #                          13 - 5,5) --
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("5.5")
 
     MIN_ORDER_SIZE = Decimal("5.2")
