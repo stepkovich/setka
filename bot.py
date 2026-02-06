@@ -36,22 +36,22 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["DOGEUSDC", "1000PEPEUSDC", "XRPUSDC", "ENAUSDC", "ADAUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "SOLUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("5.5")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("25")
+    MAX_ORDER_SIZE = Decimal("10")
 
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00015")
-    VOL_COEFF = Decimal("80.0")
-    TAKE_PROFIT_PCT = Decimal("0.0005")
+    VOL_COEFF = Decimal("100.0")
+    TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
 
-    # --- СТОП-ЛОСС (1.5% за пределами 13-го уровня) ---
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
+
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 60
