@@ -42,7 +42,7 @@ class Config:
     # --- РИСК-МЕНЕДЖМЕНТ (Для 15 уровней ---- 10
     #                          14 - 6,5
     #                          13 - 5,5) ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("5")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("5,5")
 
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("25")
@@ -50,7 +50,7 @@ class Config:
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("80.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    TAKE_PROFIT_PCT = Decimal("0.0005")
     PAGEN = 3
 
     # --- СТОП-ЛОСС (1.5% за пределами 15-го уровня) ---
