@@ -17,7 +17,7 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 from dotenv import load_dotenv
 
 # ==========================================
-# 0. CONFIG & PRECISION
+# 0. CONFIG & PRECISION//
 # ==========================================
 load_dotenv()
 getcontext().prec = 50
