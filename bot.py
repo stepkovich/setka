@@ -36,7 +36,7 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "SOLUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
