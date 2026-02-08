@@ -36,26 +36,20 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
+    SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    # При VOL_COEFF = 80: W≈32
-    # При VOL_COEFF = 100: W≈38
-    # При VOL_COEFF = 120: W≈43
-    # При VOL_COEFF = 150: W≈48
-    #  Необходимый Баланс = Кол-во монет × Мин_Ордер × ( W × 0.18 )
 
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10") #  ≥ W × 0.18
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("12.6")
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
     GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00017")
-    VOL_COEFF = Decimal("150.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    FIB_STEP_BASE = Decimal("0.00018")
+    VOL_COEFF = Decimal("900.0")
+    TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
-
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
 
@@ -219,10 +213,9 @@ class HedgeBot:
         except Exception as e:
             log.warning(f"⚠️ Setup {symbol}: {e}")
 
-    def _fib(self, n: int) -> List[int]:
-        seq = [1, 1]
-        for i in range(2, n): seq.append(seq[-1] + seq[-2])
-        return seq[:n]
+    def _fib(self, n: int) -> List[Decimal]:
+        # Геометрическая прогрессия 1.2
+        return [Decimal("1.6")**i for i in range(n)]
 
     def _calc_grid(self, base: Decimal, direction: str, order_size: Decimal) -> List[
         Tuple[Decimal, Decimal, Decimal, Decimal]]:
@@ -247,7 +240,7 @@ class HedgeBot:
         for p, q, v, d in grid:
             filled.append((v, d));
             acc_vol += v
-            if acc_vol >= target_vol * Decimal("0.9"): break
+            if acc_vol >= target_vol * Decimal("1"): break
         if not filled: return avg_entry
         num = sum(v * d for v, d in filled)
         den = sum(v for v, d in filled)
