@@ -40,6 +40,7 @@ class Config:
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
+
     # При VOL_COEFF = 80: W≈32
     # При VOL_COEFF = 100: W≈38
     # При VOL_COEFF = 120: W≈43
