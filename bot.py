@@ -40,14 +40,20 @@ class Config:
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
+    # При VOL_COEFF = 80: W≈32
+    # При VOL_COEFF = 100: W≈38
+    # При VOL_COEFF = 120: W≈43
+    # При VOL_COEFF = 150: W≈48
+    #  Необходимый Баланс = Кол-во монет × Мин_Ордер × ( W × 0.18 )
+
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10") #  ≥ W × 0.18
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
     GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00015")
-    VOL_COEFF = Decimal("100.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    FIB_STEP_BASE = Decimal("0.00017")
+    VOL_COEFF = Decimal("150.0")
+    TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
 
 
