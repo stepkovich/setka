@@ -45,6 +45,7 @@ class Config:
     # При VOL_COEFF = 100: W≈38
     # При VOL_COEFF = 120: W≈43
     # При VOL_COEFF = 150: W≈48
+
     #  Необходимый Баланс = Кол-во монет × Мин_Ордер × ( W × 0.18 )
 
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("10") #  ≥ W × 0.18
