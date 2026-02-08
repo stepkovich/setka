@@ -43,11 +43,11 @@ class Config:
 
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("12.6")
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("10")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00018")
-    VOL_COEFF = Decimal("900.0")
+    VOL_COEFF = Decimal("800.0")
     TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
 
