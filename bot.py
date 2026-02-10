@@ -39,7 +39,7 @@ class Config:
     SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
     LEVERAGE = 25
 
-    # --- РИСК-МЕНЕДЖМЕНТ --
+    # --- РИСК-МЕНЕДЖМЕНТ ---
 
     # При VOL_COEFF = 80: W≈32
     # При VOL_COEFF = 100: W≈38
