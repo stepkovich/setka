@@ -41,7 +41,7 @@ class Config:
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("12")
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
