@@ -394,7 +394,7 @@ class HedgeBot:
                         recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
                         grid = self._calc_grid(recon_base, pos_side, current_size)
                         batch = []
-                        for p, q, v, d in grid:
+                        for p, q, v, d in grid[25]:
                             # Проверка, чтобы не ставить ордера "внутри" текущей цены
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
