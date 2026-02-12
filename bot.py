@@ -9,7 +9,7 @@ from decimal import Decimal, getcontext, ROUND_HALF_UP, ROUND_FLOOR
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from functools import wraps
-
+import math
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from binance.error import ClientError
@@ -33,6 +33,7 @@ logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
 
 class Config:
+
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
@@ -40,27 +41,20 @@ class Config:
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-
-    # При VOL_COEFF = 80: W≈32
-    # При VOL_COEFF = 100: W≈38
-    # При VOL_COEFF = 120: W≈43
-    # При VOL_COEFF = 150: W≈48
-
-    #  Необходимый Баланс = Кол-во монет × Мин_Ордер × ( W × 0.18 )
-
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10") #  ≥ W × 0.18
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
-    GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00017")
-    VOL_COEFF = Decimal("150.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
-    PAGEN = 3
+    # НОВАЯ ПУЛЬСИРУЮЩАЯ СЕТКА
+    TOTAL_COVERAGE_PCT = Decimal("0.20")  # Покрытие 20%
+    MIN_STEP_PCT = Decimal("0.0005")  # 0.05%
+    MAX_STEP_PCT = Decimal("0.015")  # 1.5%
+    VOL_COEFF = Decimal("100.0")
 
-
+    TAKE_PROFIT_PCT = Decimal("0.0005")
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
 
+    PAGEN = 3
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 60
     STATE_FILE = "bot_state.json"
@@ -155,7 +149,7 @@ class HedgeBot:
                     min_qty=Decimal(str(l_f['minQty'])), min_notional=mn,
                     price_precision=int(s_info['pricePrecision']), qty_precision=int(s_info['quantityPrecision'])
                 )
-                dist = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.PAGEN))
+                dist = Config.MIN_STEP_PCT * 2
 
                 st = SymbolState(symbol=sym, info=prec, trailing_threshold_pct=dist)
 
@@ -228,16 +222,52 @@ class HedgeBot:
 
     def _calc_grid(self, base: Decimal, direction: str, order_size: Decimal) -> List[
         Tuple[Decimal, Decimal, Decimal, Decimal]]:
+
         lvls = []
-        fib_seq = self._fib(Config.GRID_LEVELS)
-        cum_dist = Decimal("0")
-        for i in range(Config.GRID_LEVELS):
-            step = Config.FIB_STEP_BASE * Decimal(str(fib_seq[i]))
-            cum_dist += step
-            price = base * (Decimal("1.0") - cum_dist) if direction == "LONG" else base * (Decimal("1.0") + cum_dist)
+        curr_dist = Decimal("0")
+        fib_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        sigma = 0.05  # Ширина влияния Фибо-зон
+
+        count = 0  # Счетчик безопасности
+        while curr_dist < Config.TOTAL_COVERAGE_PCT and count < 100:
+            count += 1
+
+            # 1. Рассчитываем прогресс (0.0 to 1.0) внутри 20%-й сетки
+            progress = float(curr_dist / Config.TOTAL_COVERAGE_PCT)
+
+            # 2. Находим влияние ближайшего уровня Фибоначчи (influence)
+            dist_to_fib = min([abs(progress - f) for f in fib_ratios])
+            # Формула Гауссовой пульсации
+            influence = Decimal(str(math.exp(-(dist_to_fib ** 2) / (2 * (sigma ** 2)))))
+
+            # 3. Рассчитываем текущий шаг (плавно от 0.05% до 1.5%)
+            step = Config.MAX_STEP_PCT - (Config.MAX_STEP_PCT - Config.MIN_STEP_PCT) * influence
+
+            # Если следующий шаг вылетает за 20%, обрезаем его точно по границе
+            if curr_dist + step > Config.TOTAL_COVERAGE_PCT:
+                step = Config.TOTAL_COVERAGE_PCT - curr_dist
+
+            curr_dist += step
+
+            # 4. Считаем цену ордера (Твоя оригинальная логика)
+            if direction == "LONG":
+                price = base * (Decimal("1.0") - curr_dist)
+            else:
+                price = base * (Decimal("1.0") + curr_dist)
+
+            if price <= 0: break
+
+            # 5. Множитель объема (ТВОЯ ЛОГИКА: чем шире шаг, тем больше объем)
             multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
+
             qty = (order_size * multiplier) / price
-            lvls.append((price, qty, order_size * multiplier, cum_dist))
+
+            # Сохраняем: цена, кол-во монет, объем в USDT, кумулятивная дистанция
+            lvls.append((price, qty, order_size * multiplier, curr_dist))
+
+            if curr_dist >= Config.TOTAL_COVERAGE_PCT:
+                break
+
         return lvls
 
     def _recon(self, avg_entry: Decimal, qty: Decimal, direction: str, symbol: str, order_size: Decimal) -> Decimal:
@@ -249,7 +279,7 @@ class HedgeBot:
         for p, q, v, d in grid:
             filled.append((v, d));
             acc_vol += v
-            if acc_vol >= target_vol * Decimal("0.9"): break
+            if acc_vol >= target_vol * Decimal("0.98"): break
         if not filled: return avg_entry
         num = sum(v * d for v, d in filled)
         den = sum(v for v, d in filled)
@@ -316,7 +346,7 @@ class HedgeBot:
                 # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (Для мониторинга в WS)
                 center = state.long_grid_center if is_l else state.short_grid_center
                 if amt > info.min_qty and center > 0:
-                    grid_depth = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.GRID_LEVELS))
+                    grid_depth = Config.TOTAL_COVERAGE_PCT
                     total_threshold = grid_depth + Config.STOP_LOSS_BEYOND_GRID_PCT
                     sl_p = center * (Decimal("1.0") - total_threshold) if is_l else center * (
                                 Decimal("1.0") + total_threshold)
@@ -456,7 +486,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Starting Bot! GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS}")
+        log.info(f"🚀 Starting Bot! TOTAL: {Config.TOTAL_COVERAGE_PCT*100}%, SIMBOL: {Config.SYMBOLS}")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
