@@ -9,7 +9,7 @@ from decimal import Decimal, getcontext, ROUND_HALF_UP, ROUND_FLOOR
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from functools import wraps
-
+import math
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from binance.error import ClientError
@@ -33,27 +33,28 @@ logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
 
 class Config:
+
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
     LEVERAGE = 25
 
-    # --- РИСК-МЕНЕДЖМЕНТ ----
-
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
+    # --- РИСК-МЕНЕДЖМЕНТ ---
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("12")
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
-    GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00017")
-    VOL_COEFF = Decimal("150.0")
+    # НОВАЯ ПУЛЬСИРУЮЩАЯ СЕТКА
+    TOTAL_COVERAGE_PCT = Decimal("0.20")  # Покрытие 20%
+    MIN_STEP_PCT = Decimal("0.0005")  # 0.05%
+    MAX_STEP_PCT = Decimal("0.015")  # 1.5%
+    VOL_COEFF = Decimal("100.0")
+
     TAKE_PROFIT_PCT = Decimal("0.001")
-    PAGEN = 3
-
-
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
 
+    PAGEN = 3
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 60
     STATE_FILE = "bot_state.json"
@@ -118,6 +119,7 @@ class HedgeBot:
     def __init__(self):
         self.running = True
         self.lock = threading.RLock()
+        self.side_processing_locks = {}
         self.client: Optional[UMFutures] = None
         self.ws_client: Optional[UMFuturesWebsocketClient] = None
         self.states: Dict[str, SymbolState] = {}
@@ -125,7 +127,7 @@ class HedgeBot:
         self.listen_key = None
 
     def initialize(self):
-        log.info(f"🔹 Starting Bot (GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS})")
+        log.info(f"🔹 Starting Bot (SIMBOL: {Config.SYMBOLS})")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
@@ -148,7 +150,7 @@ class HedgeBot:
                     min_qty=Decimal(str(l_f['minQty'])), min_notional=mn,
                     price_precision=int(s_info['pricePrecision']), qty_precision=int(s_info['quantityPrecision'])
                 )
-                dist = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.PAGEN))
+                dist = Config.MIN_STEP_PCT * 2
 
                 st = SymbolState(symbol=sym, info=prec, trailing_threshold_pct=dist)
 
@@ -221,16 +223,52 @@ class HedgeBot:
 
     def _calc_grid(self, base: Decimal, direction: str, order_size: Decimal) -> List[
         Tuple[Decimal, Decimal, Decimal, Decimal]]:
+
         lvls = []
-        fib_seq = self._fib(Config.GRID_LEVELS)
-        cum_dist = Decimal("0")
-        for i in range(Config.GRID_LEVELS):
-            step = Config.FIB_STEP_BASE * Decimal(str(fib_seq[i]))
-            cum_dist += step
-            price = base * (Decimal("1.0") - cum_dist) if direction == "LONG" else base * (Decimal("1.0") + cum_dist)
+        curr_dist = Decimal("0")
+        fib_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+        sigma = 0.05  # Ширина влияния Фибо-зон
+
+        count = 0  # Счетчик безопасности
+        while curr_dist < Config.TOTAL_COVERAGE_PCT and count < 100:
+            count += 1
+
+            # 1. Рассчитываем прогресс (0.0 to 1.0) внутри 20%-й сетки
+            progress = float(curr_dist / Config.TOTAL_COVERAGE_PCT)
+
+            # 2. Находим влияние ближайшего уровня Фибоначчи (influence)
+            dist_to_fib = min([abs(progress - f) for f in fib_ratios])
+            # Формула Гауссовой пульсации
+            influence = Decimal(str(math.exp(-(dist_to_fib ** 2) / (2 * (sigma ** 2)))))
+
+            # 3. Рассчитываем текущий шаг (плавно от 0.05% до 1.5%)
+            step = Config.MAX_STEP_PCT - (Config.MAX_STEP_PCT - Config.MIN_STEP_PCT) * influence
+
+            # Если следующий шаг вылетает за 20%, обрезаем его точно по границе
+            if curr_dist + step > Config.TOTAL_COVERAGE_PCT:
+                step = Config.TOTAL_COVERAGE_PCT - curr_dist
+
+            curr_dist += step
+
+            # 4. Считаем цену ордера (Твоя оригинальная логика)
+            if direction == "LONG":
+                price = base * (Decimal("1.0") - curr_dist)
+            else:
+                price = base * (Decimal("1.0") + curr_dist)
+
+            if price <= 0: break
+
+            # 5. Множитель объема (ТВОЯ ЛОГИКА: чем шире шаг, тем больше объем)
             multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
+
             qty = (order_size * multiplier) / price
-            lvls.append((price, qty, order_size * multiplier, cum_dist))
+
+            # Сохраняем: цена, кол-во монет, объем в USDT, кумулятивная дистанция
+            lvls.append((price, qty, order_size * multiplier, curr_dist))
+
+            if curr_dist >= Config.TOTAL_COVERAGE_PCT:
+                break
+
         return lvls
 
     def _recon(self, avg_entry: Decimal, qty: Decimal, direction: str, symbol: str, order_size: Decimal) -> Decimal:
@@ -242,7 +280,7 @@ class HedgeBot:
         for p, q, v, d in grid:
             filled.append((v, d));
             acc_vol += v
-            if acc_vol >= target_vol * Decimal("0.9"): break
+            if acc_vol >= target_vol * Decimal("0.98"): break
         if not filled: return avg_entry
         num = sum(v * d for v, d in filled)
         den = sum(v for v, d in filled)
@@ -277,6 +315,7 @@ class HedgeBot:
         for i in range(0, len(params_list), 5):
             query = {"symbol": symbol, "batchOrders": json.dumps(params_list[i:i + 5])}
             self.client.sign_request("POST", "/fapi/v1/batchOrders", query)
+            time.sleep(0.2)
 
     @retry_request()
     def _sync_all_positions_rest(self):
@@ -297,22 +336,40 @@ class HedgeBot:
 
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
-        state = self.states[symbol]
-        info = state.info
-        is_l = (pos_side == "LONG")
+
+        # 1. МЕХАНИЗМ БЛОКИРОВКИ (защита от Ошибки 429)
+        # Создаем уникальный ключ для пары (напр. "DOGEUSDC_LONG")
+        lock_key = f"{symbol}_{pos_side}"
+
+        # Инициализируем замок для этой стороны, если его еще нет
+        if lock_key not in self.side_processing_locks:
+            self.side_processing_locks[lock_key] = threading.Lock()
+
+        # Пытаемся захватить замок.
+        # Если он уже занят другим потоком - просто выходим (return),
+        # так как обновление уже идет.
+        if not self.side_processing_locks[lock_key].acquire(blocking=False):
+            return
+
         try:
+            state = self.states[symbol]
+            info = state.info
+            is_l = (pos_side == "LONG")
+
             with self.lock:
+                # Очищаем старые ордера перед выставлением новых
                 self._cancel_side_orders(symbol, pos_side)
+
                 amt, entry = (state.long_amt, state.long_entry) if is_l else (state.short_amt, state.short_entry)
                 current_size = state.current_long_order_size if is_l else state.current_short_order_size
 
                 # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (Для мониторинга в WS)
                 center = state.long_grid_center if is_l else state.short_grid_center
                 if amt > info.min_qty and center > 0:
-                    grid_depth = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.GRID_LEVELS))
+                    grid_depth = Config.TOTAL_COVERAGE_PCT
                     total_threshold = grid_depth + Config.STOP_LOSS_BEYOND_GRID_PCT
                     sl_p = center * (Decimal("1.0") - total_threshold) if is_l else center * (
-                                Decimal("1.0") + total_threshold)
+                            Decimal("1.0") + total_threshold)
                     if is_l:
                         state.long_sl_price = sl_p
                     else:
@@ -322,13 +379,14 @@ class HedgeBot:
                 # 2. ТЕЙК-ПРОФИТ
                 if amt > info.min_qty:
                     tp_p = entry * (Decimal("1.0") + Config.TAKE_PROFIT_PCT) if is_l else entry * (
-                                Decimal("1.0") - Config.TAKE_PROFIT_PCT)
+                            Decimal("1.0") - Config.TAKE_PROFIT_PCT)
                     tp_ps, tp_qs = self._rp(tp_p, info), self._rq(amt, info)
                     try:
                         self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
                                               type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
                         log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
                     except ClientError as e:
+                        # Если позиция уже закрыта или ошибка - обнуляем amt
                         if e.error_code == -2022: amt = Decimal("0")
 
                     # 3. СЕТКА УСРЕДНЕНИЯ
@@ -337,6 +395,7 @@ class HedgeBot:
                         grid = self._calc_grid(recon_base, pos_side, current_size)
                         batch = []
                         for p, q, v, d in grid:
+                            # Проверка, чтобы не ставить ордера "внутри" текущей цены
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
                                 ps, qs = self._rp(p, info), self._rq(q, info)
@@ -353,8 +412,10 @@ class HedgeBot:
                         state.current_long_order_size, state.long_grid_center = new_dynamic_size, state.last_price
                     else:
                         state.current_short_order_size, state.short_grid_center = new_dynamic_size, state.last_price
+
                     self._save_state_to_disk()
                     log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_dynamic_size}$")
+
                     grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
                     batch = []
                     for p, q, v, d in grid:
@@ -363,8 +424,12 @@ class HedgeBot:
                             batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
                                           "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
                     self._place_batch(symbol, batch)
+
         except Exception as e:
             log.error(f"[{symbol}] ❌ Strategy Error {pos_side}: {e}")
+        finally:
+            # ОБЯЗАТЕЛЬНО освобождаем замок, чтобы сторона могла обновиться в следующий раз
+            self.side_processing_locks[lock_key].release()
 
     def on_ws_msg(self, _, m):
         try:
@@ -449,7 +514,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Starting Bot! GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS}")
+        log.info(f"🚀 Starting Bot! TOTAL: {Config.TOTAL_COVERAGE_PCT*100}%, SIMBOL: {Config.SYMBOLS}")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
