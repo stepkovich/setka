@@ -126,7 +126,7 @@ class HedgeBot:
         self.listen_key = None
 
     def initialize(self):
-        log.info(f"🔹 Starting Bot (GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS})")
+        log.info(f"🔹 Starting Bot (SIMBOL: {Config.SYMBOLS})")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
