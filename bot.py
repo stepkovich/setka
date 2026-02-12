@@ -39,7 +39,7 @@ class Config:
     SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
     LEVERAGE = 25
 
-    # --- РИСК-МЕНЕДЖМЕНТ ---
+    # --- РИСК-МЕНЕДЖМЕНТ ----
 
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
     MIN_ORDER_SIZE = Decimal("5.2")
