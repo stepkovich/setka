@@ -394,7 +394,7 @@ class HedgeBot:
                         recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
                         grid = self._calc_grid(recon_base, pos_side, current_size)
                         batch = []
-                        for p, q, v, d in grid:
+                        for p, q, v, d in grid[:25]:
                             # Проверка, чтобы не ставить ордера "внутри" текущей цены
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
@@ -418,7 +418,7 @@ class HedgeBot:
 
                     grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
                     batch = []
-                    for p, q, v, d in grid:
+                    for p, q, v, d in grid[:25]:
                         ps, qs = self._rp(p, info), self._rq(q, info)
                         if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
                             batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
