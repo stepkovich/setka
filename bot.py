@@ -42,7 +42,7 @@ class Config:
     # --- РИСК-МЕНЕДЖМЕНТ ---
     BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("10")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
     GRID_LEVELS = 13
     FIB_STEP_BASE = Decimal("0.00017")
