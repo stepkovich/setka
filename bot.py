@@ -50,7 +50,7 @@ class Config:
     MIN_STEP_PCT = Decimal("0.0005")  # 0.05%
     MAX_STEP_PCT = Decimal("0.015")  # 1.5%
     VOL_COEFF = Decimal("100.0")
-    SIGMA = 0.08
+    SIGMA = 0.05
 
     TAKE_PROFIT_PCT = Decimal("0.001")
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
@@ -393,7 +393,7 @@ class HedgeBot:
                         recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
                         grid = self._calc_grid(recon_base, pos_side, current_size)
                         batch = []
-                        for p, q, v, d in grid[:60]:
+                        for p, q, v, d in grid[:40]:
                             # Проверка, чтобы не ставить ордера "внутри" текущей цены
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
@@ -417,7 +417,7 @@ class HedgeBot:
 
                     grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
                     batch = []
-                    for p, q, v, d in grid[:60]:
+                    for p, q, v, d in grid[:40]:
                         ps, qs = self._rp(p, info), self._rq(q, info)
                         if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
                             batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
