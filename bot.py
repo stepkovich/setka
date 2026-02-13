@@ -50,6 +50,7 @@ class Config:
     MIN_STEP_PCT = Decimal("0.0005")  # 0.05%
     MAX_STEP_PCT = Decimal("0.015")  # 1.5%
     VOL_COEFF = Decimal("100.0")
+    SIGMA = 0.08
 
     TAKE_PROFIT_PCT = Decimal("0.001")
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
@@ -142,8 +143,8 @@ class HedgeBot:
                 p_f = next(f for f in s_info['filters'] if f['filterType'] == 'PRICE_FILTER')
                 l_f = next(f for f in s_info['filters'] if f['filterType'] == 'LOT_SIZE')
                 n_f = next((f for f in s_info['filters'] if f['filterType'] in ['MIN_NOTIONAL', 'NOTIONAL']), None)
-                mn = Decimal("6.0")
-                if n_f: mn = Decimal(str(n_f.get('notional', n_f.get('minNotional', 6.0))))
+                mn = Decimal("5.2")
+                if n_f: mn = Decimal(str(n_f.get('notional', n_f.get('minNotional', 5.2))))
 
                 prec = SymbolPrecision(
                     tick_size=Decimal(str(p_f['tickSize'])), step_size=Decimal(str(l_f['stepSize'])),
@@ -227,9 +228,7 @@ class HedgeBot:
         lvls = []
         curr_dist = Decimal("0")
         fib_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-        sigma = 0.05  # Ширина влияния Фибо-зон
-
-        count = 0  # Счетчик безопасности
+        count = 0
         while curr_dist < Config.TOTAL_COVERAGE_PCT and count < 100:
             count += 1
 
@@ -239,7 +238,7 @@ class HedgeBot:
             # 2. Находим влияние ближайшего уровня Фибоначчи (influence)
             dist_to_fib = min([abs(progress - f) for f in fib_ratios])
             # Формула Гауссовой пульсации
-            influence = Decimal(str(math.exp(-(dist_to_fib ** 2) / (2 * (sigma ** 2)))))
+            influence = Decimal(str(math.exp(-(dist_to_fib ** 2) / (2 * (Config.SIGMA ** 2)))))
 
             # 3. Рассчитываем текущий шаг (плавно от 0.05% до 1.5%)
             step = Config.MAX_STEP_PCT - (Config.MAX_STEP_PCT - Config.MIN_STEP_PCT) * influence
@@ -394,7 +393,7 @@ class HedgeBot:
                         recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
                         grid = self._calc_grid(recon_base, pos_side, current_size)
                         batch = []
-                        for p, q, v, d in grid[:40]:
+                        for p, q, v, d in grid[:60]:
                             # Проверка, чтобы не ставить ордера "внутри" текущей цены
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
@@ -418,7 +417,7 @@ class HedgeBot:
 
                     grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
                     batch = []
-                    for p, q, v, d in grid[:40]:
+                    for p, q, v, d in grid[:60]:
                         ps, qs = self._rp(p, info), self._rq(q, info)
                         if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
                             batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
