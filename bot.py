@@ -18,7 +18,7 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 from dotenv import load_dotenv
 
 # ==========================================
-# 0. CONFIG & PRECISION
+# 0. CONFIG & PRECISION+
 # ==========================================
 load_dotenv()  # Загружает ключи из файла .env
 getcontext().prec = 50  # Устанавливаем точность вычислений (50 знаков), чтобы избежать ошибок округления денег
