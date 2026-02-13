@@ -37,11 +37,11 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
+    SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("15")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("15.3")
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("10")
 
@@ -49,8 +49,9 @@ class Config:
     TOTAL_COVERAGE_PCT = Decimal("0.20")
     MIN_STEP_PCT = Decimal("0.0005")
     MAX_STEP_PCT = Decimal("0.008")
-    VOL_COEFF = Decimal("100.0")
+    VOL_COEFF = Decimal("40.0")
     SIGMA = 0.05
+    RECOVERY_ACCELERATION = Decimal("0.075")
 
     TAKE_PROFIT_PCT = Decimal("0.001")
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
@@ -222,62 +223,58 @@ class HedgeBot:
         for i in range(2, n): seq.append(seq[-1] + seq[-2])
         return seq[:n]
 
-    def _calc_grid(self, base: Decimal, direction: str, order_size: Decimal) -> List[
-        Tuple[Decimal, Decimal, Decimal, Decimal]]:
-
+    def _calc_grid(self, base: Decimal, direction: str, order_size: Decimal, current_amt: Decimal = Decimal("0")) -> \
+    List[Tuple[Decimal, Decimal, Decimal, Decimal]]:
         lvls = []
         curr_dist = Decimal("0")
         fib_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+
+        # Считаем текущий "вес" позиции (во сколько раз позиция больше первого ордера)
+        # Это база, которая не дает усреднению "обнулиться"
+        accumulated_weight = (current_amt * base) / order_size
+
         count = 0
-        while curr_dist < Config.TOTAL_COVERAGE_PCT and count < 100:
+        # Ограничитель в 150 итераций для безопасности
+        while curr_dist < Config.TOTAL_COVERAGE_PCT and count < 150:
             count += 1
-
-            # 1. Рассчитываем прогресс (0.0 to 1.0) внутри 20%-й сетки
             progress = float(curr_dist / Config.TOTAL_COVERAGE_PCT)
-
-            # 2. Находим влияние ближайшего уровня Фибоначчи (influence)
             dist_to_fib = min([abs(progress - f) for f in fib_ratios])
-            # Формула Гауссовой пульсации
             influence = Decimal(str(math.exp(-(dist_to_fib ** 2) / (2 * (Config.SIGMA ** 2)))))
 
-            # 3. Рассчитываем текущий шаг (плавно от 0.05% до 1.5%)
+            # Расчет шага
             step = Config.MAX_STEP_PCT - (Config.MAX_STEP_PCT - Config.MIN_STEP_PCT) * influence
-
-            # Если следующий шаг вылетает за 20%, обрезаем его точно по границе
             if curr_dist + step > Config.TOTAL_COVERAGE_PCT:
                 step = Config.TOTAL_COVERAGE_PCT - curr_dist
-
             curr_dist += step
 
-            # 4. Считаем цену ордера (Твоя оригинальная логика)
-            if direction == "LONG":
-                price = base * (Decimal("1.0") - curr_dist)
-            else:
-                price = base * (Decimal("1.0") + curr_dist)
-
+            # Расчет цены
+            price = base * (Decimal("1.0") - curr_dist) if direction == "LONG" else base * (Decimal("1.0") + curr_dist)
             if price <= 0: break
 
-            # 5. Множитель объема (ТВОЯ ЛОГИКА: чем шире шаг, тем больше объем)
-            multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
+            # --- ГЕОМЕТРИЧЕСКОЕ УСКОРЕНИЕ ---
+            # Учитываем и накопленный объем, и текущий шаг
+            volume_boost = Decimal("1.0") + (accumulated_weight * Config.RECOVERY_ACCELERATION)
+            multiplier = (Decimal("1.0") + (step * Config.VOL_COEFF)) * volume_boost
 
             qty = (order_size * multiplier) / price
-
-            # Сохраняем: цена, кол-во монет, объем в USDT, кумулятивная дистанция
             lvls.append((price, qty, order_size * multiplier, curr_dist))
+
+            # Наращиваем виртуальный вес для построения остатка сетки в этом цикле
+            accumulated_weight += multiplier
 
             if curr_dist >= Config.TOTAL_COVERAGE_PCT:
                 break
-
         return lvls
 
     def _recon(self, avg_entry: Decimal, qty: Decimal, direction: str, symbol: str, order_size: Decimal) -> Decimal:
         if qty == Decimal("0"): return self.states[symbol].last_price
-        grid = self._calc_grid(avg_entry, direction, order_size)
+        # Передаем qty, чтобы симуляция сетки знала начальный вес
+        grid = self._calc_grid(avg_entry, direction, order_size, qty)
         filled = []
         acc_vol = Decimal("0")
         target_vol = qty * avg_entry
         for p, q, v, d in grid:
-            filled.append((v, d));
+            filled.append((v, d))
             acc_vol += v
             if acc_vol >= target_vol * Decimal("0.98"): break
         if not filled: return avg_entry
@@ -391,10 +388,10 @@ class HedgeBot:
                     # 3. СЕТКА УСРЕДНЕНИЯ
                     if amt > 0:
                         recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
-                        grid = self._calc_grid(recon_base, pos_side, current_size)
+                        # ДОБАВЛЕНО: передаем amt в расчет сетки
+                        grid = self._calc_grid(recon_base, pos_side, current_size, amt)
                         batch = []
-                        for p, q, v, d in grid[:40]:
-                            # Проверка, чтобы не ставить ордера "внутри" текущей цены
+                        for p, q, v, d in grid[:60]:  # Срез 60 для безопасности
                             if (is_l and p < state.last_price * Decimal("0.9997")) or (
                                     not is_l and p > state.last_price * Decimal("1.0003")):
                                 ps, qs = self._rp(p, info), self._rq(q, info)
@@ -415,9 +412,10 @@ class HedgeBot:
                     self._save_state_to_disk()
                     log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_dynamic_size}$")
 
-                    grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
+                    # Здесь amt = 0, так что передавать необязательно, но для единообразия оставим
+                    grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size, Decimal("0"))
                     batch = []
-                    for p, q, v, d in grid[:40]:
+                    for p, q, v, d in grid[:60]:
                         ps, qs = self._rp(p, info), self._rq(q, info)
                         if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
                             batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
