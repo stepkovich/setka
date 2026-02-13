@@ -46,9 +46,9 @@ class Config:
     MAX_ORDER_SIZE = Decimal("10")
 
     # НОВАЯ ПУЛЬСИРУЮЩАЯ СЕТКА
-    TOTAL_COVERAGE_PCT = Decimal("0.20")  # Покрытие 20%
-    MIN_STEP_PCT = Decimal("0.0005")  # 0.05%
-    MAX_STEP_PCT = Decimal("0.015")  # 1.5%
+    TOTAL_COVERAGE_PCT = Decimal("0.20")
+    MIN_STEP_PCT = Decimal("0.0005")
+    MAX_STEP_PCT = Decimal("0.008")
     VOL_COEFF = Decimal("100.0")
     SIGMA = 0.05
 
