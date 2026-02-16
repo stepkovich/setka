@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from functools import wraps
 
+# Libs
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from binance.error import ClientError
@@ -27,7 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("HEDGE_ULTIMATE_15L_PRO")
+log = logging.getLogger("HEDGE_RELENTLESS_1.7")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -36,22 +37,26 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "DOGEUSDC"]
+    SYMBOLS = ["1000PEPEUSDC", "SOLUSDC", "DOGEUSDC", "SUIUSDC", "ENAUSDC", "ADAUSDC", "XRPUSDC"]
     LEVERAGE = 25
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
-    MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("5.2")
+    # Расчет ордера от ДОСТУПНОГО БАЛАНСА
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10.0")
+
+    # Максимальный множитель объема позиции (Защита Recon от перегруза)
+    MAX_EXPOSURE_MULTIPLIER = Decimal("25.0")
+
+    MIN_ORDER_SIZE = Decimal("5.5")
+    MAX_ORDER_SIZE = Decimal("15.0")
 
     GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00017")
-    VOL_COEFF = Decimal("150.0")
+    FIB_STEP_BASE = Decimal("0.00015")
+    VOL_COEFF = Decimal("80.0")
     TAKE_PROFIT_PCT = Decimal("0.001")
-    PAGEN = 3
+    PAGEN = 10
 
-
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 60
@@ -83,13 +88,16 @@ class SymbolState:
     current_long_order_size: Decimal = Config.MIN_ORDER_SIZE
     current_short_order_size: Decimal = Config.MIN_ORDER_SIZE
 
-    # Гибридный стоп
     long_sl_price: Decimal = Decimal("0")
     short_sl_price: Decimal = Decimal("0")
+    last_sl_attempt: float = 0  # Время последней попытки закрытия по стопу
 
     trailing_threshold_pct: Decimal = Decimal("0")
 
 
+# ==========================================
+# 1. DECORATOR: RETRY LOGIC
+# ==========================================
 def retry_request(max_retries=3, delay=1.0):
     def decorator(func):
         @wraps(func)
@@ -113,6 +121,9 @@ def retry_request(max_retries=3, delay=1.0):
     return decorator
 
 
+# ==========================================
+# 2. BOT CLASS
+# ==========================================
 class HedgeBot:
     def __init__(self):
         self.running = True
@@ -124,13 +135,12 @@ class HedgeBot:
         self.listen_key = None
 
     def initialize(self):
-        log.info(f"🔹 Starting Bot (GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS})")
+        log.info("🔹 Starting Relentless Bot v1.7 (Full State + SL Memory)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
             ex_info = self.client.exchange_info()
             all_info = {s['symbol']: s for s in ex_info['symbols']}
-
             saved_data = self._load_state_from_disk()
 
             for sym in Config.SYMBOLS:
@@ -148,7 +158,6 @@ class HedgeBot:
                     price_precision=int(s_info['pricePrecision']), qty_precision=int(s_info['quantityPrecision'])
                 )
                 dist = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.PAGEN))
-
                 st = SymbolState(symbol=sym, info=prec, trailing_threshold_pct=dist)
 
                 if sym in saved_data:
@@ -156,7 +165,6 @@ class HedgeBot:
                     st.current_short_order_size = Decimal(str(saved_data[sym].get('s_size', Config.MIN_ORDER_SIZE)))
                     st.long_grid_center = Decimal(str(saved_data[sym].get('l_center', "0")))
                     st.short_grid_center = Decimal(str(saved_data[sym].get('s_center', "0")))
-                    log.info(f"[{sym}] 💾 Full State Restored. SL logic active.")
 
                 self.states[sym] = st
                 self._setup_account(sym)
@@ -164,7 +172,7 @@ class HedgeBot:
                 self.states[sym].last_price = Decimal(str(ticker['price']))
 
             self._sync_all_positions_rest()
-            log.info("✅ Persistence ready. Trading started.")
+            log.info("✅ Initialization complete.")
         except Exception as e:
             log.critical(f"Init Fail: {e}"); sys.exit(1)
 
@@ -174,15 +182,13 @@ class HedgeBot:
             with self.lock:
                 for sym, st in self.states.items():
                     data[sym] = {
-                        "l_size": str(st.current_long_order_size),
-                        "s_size": str(st.current_short_order_size),
-                        "l_center": str(st.long_grid_center),
-                        "s_center": str(st.short_grid_center)
+                        "l_size": str(st.current_long_order_size), "s_size": str(st.current_short_order_size),
+                        "l_center": str(st.long_grid_center), "s_center": str(st.short_grid_center)
                     }
             with open(Config.STATE_FILE, 'w') as f:
                 json.dump(data, f)
         except Exception as e:
-            log.error(f"Save state error: {e}")
+            log.error(f"Save error: {e}")
 
     def _load_state_from_disk(self) -> dict:
         if os.path.exists(Config.STATE_FILE):
@@ -194,10 +200,17 @@ class HedgeBot:
         return {}
 
     def _get_dynamic_order_size(self):
+        """Считает ордер от Available Balance для минимизации риска перегруза"""
         try:
             acc = self.client.account()
-            balance = Decimal(str(acc['totalWalletBalance']))
-            calc = balance / (Decimal(str(len(Config.SYMBOLS))) * Config.BALANCE_PER_1_DOLLAR_ORDER)
+            available = Decimal(str(acc['availableBalance']))
+            wallet = Decimal(str(acc['totalWalletBalance']))
+
+            if available < (wallet * Decimal("0.15")):
+                log.warning("🛑 Low Available Margin! Refusing new deals.")
+                return Decimal("0")
+
+            calc = available / (Decimal(str(len(Config.SYMBOLS))) * Config.BALANCE_PER_1_DOLLAR_ORDER)
             return max(Config.MIN_ORDER_SIZE, min(calc, Config.MAX_ORDER_SIZE))
         except:
             return Config.MIN_ORDER_SIZE
@@ -228,8 +241,9 @@ class HedgeBot:
             cum_dist += step
             price = base * (Decimal("1.0") - cum_dist) if direction == "LONG" else base * (Decimal("1.0") + cum_dist)
             multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
-            qty = (order_size * multiplier) / price
-            lvls.append((price, qty, order_size * multiplier, cum_dist))
+            vol_usd = order_size * multiplier
+            qty = vol_usd / price
+            lvls.append((price, qty, vol_usd, cum_dist))
         return lvls
 
     def _recon(self, avg_entry: Decimal, qty: Decimal, direction: str, symbol: str, order_size: Decimal) -> Decimal:
@@ -241,9 +255,9 @@ class HedgeBot:
         for p, q, v, d in grid:
             filled.append((v, d));
             acc_vol += v
-            if acc_vol >= target_vol * Decimal("0.9"): break
+            if acc_vol >= target_vol * Decimal("1"): break
         if not filled: return avg_entry
-        num = sum(v * d for v, d in filled)
+        num = sum(v * d for v, d in filled);
         den = sum(v for v, d in filled)
         avg_dist = num / den if den > 0 else Decimal("0")
         return avg_entry / (Decimal("1.0") - avg_dist) if direction == "LONG" else avg_entry / (
@@ -294,6 +308,7 @@ class HedgeBot:
                     elif p['positionSide'] == "SHORT":
                         self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
 
+    # --- CORE LOGIC ---
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
         state = self.states[symbol]
@@ -305,7 +320,7 @@ class HedgeBot:
                 amt, entry = (state.long_amt, state.long_entry) if is_l else (state.short_amt, state.short_entry)
                 current_size = state.current_long_order_size if is_l else state.current_short_order_size
 
-                # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (Для мониторинга в WS)
+                # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (Для мониторинга)
                 center = state.long_grid_center if is_l else state.short_grid_center
                 if amt > info.min_qty and center > 0:
                     grid_depth = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.GRID_LEVELS))
@@ -316,7 +331,7 @@ class HedgeBot:
                         state.long_sl_price = sl_p
                     else:
                         state.short_sl_price = sl_p
-                    log.info(f"[{symbol}] 🛡️ SL Updated {pos_side} @ {self._rp(sl_p, info)}")
+                    log.info(f"[{symbol}] 🛡️ SL {pos_side} established at {self._rp(sl_p, info)}")
 
                 # 2. ТЕЙК-ПРОФИТ
                 if amt > info.min_qty:
@@ -330,38 +345,45 @@ class HedgeBot:
                     except ClientError as e:
                         if e.error_code == -2022: amt = Decimal("0")
 
-                    # 3. СЕТКА УСРЕДНЕНИЯ
+                    # 3. СЕТКА УСРЕДНЕНИЯ (с лимитом накопления)
                     if amt > 0:
-                        recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
-                        grid = self._calc_grid(recon_base, pos_side, current_size)
-                        batch = []
-                        for p, q, v, d in grid:
-                            if (is_l and p < state.last_price * Decimal("0.9997")) or (
-                                    not is_l and p > state.last_price * Decimal("1.0003")):
-                                ps, qs = self._rp(p, info), self._rq(q, info)
-                                if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
-                                    batch.append(
-                                        {"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
-                                         "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
-                        self._place_batch(symbol, batch)
+                        if (amt * entry) < (current_size * Config.MAX_EXPOSURE_MULTIPLIER):
+                            recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
+                            grid = self._calc_grid(recon_base, pos_side, current_size)
+                            batch = []
+                            for p, q, v, d in grid:
+                                if (is_l and p < state.last_price * Decimal("0.9997")) or (
+                                        not is_l and p > state.last_price * Decimal("1.0003")):
+                                    ps, qs = self._rp(p, info), self._rq(q, info)
+                                    if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                                        batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL",
+                                                      "positionSide": pos_side,
+                                                      "type": "LIMIT", "quantity": qs, "price": ps,
+                                                      "timeInForce": "GTX"})
+                            self._place_batch(symbol, batch)
+                        else:
+                            log.warning(f"[{symbol}] 🛑 Max exposure reached for {pos_side}. No more averaging.")
 
                 # 4. НОВАЯ СЕТКА (СТАРТ)
                 if amt <= info.min_qty:
-                    new_dynamic_size = self._get_dynamic_order_size()
-                    if is_l:
-                        state.current_long_order_size, state.long_grid_center = new_dynamic_size, state.last_price
-                    else:
-                        state.current_short_order_size, state.short_grid_center = new_dynamic_size, state.last_price
-                    self._save_state_to_disk()
-                    log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_dynamic_size}$")
-                    grid = self._calc_grid(state.last_price, pos_side, new_dynamic_size)
-                    batch = []
-                    for p, q, v, d in grid:
-                        ps, qs = self._rp(p, info), self._rq(q, info)
-                        if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
-                            batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
-                                          "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
-                    self._place_batch(symbol, batch)
+                    new_size = self._get_dynamic_order_size()
+                    if new_size > 0:
+                        if is_l:
+                            state.current_long_order_size, state.long_grid_center = new_size, state.last_price
+                        else:
+                            state.current_short_order_size, state.short_grid_center = new_size, state.last_price
+                        self._save_state_to_disk()
+                        log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_size:.4f}$")
+                        grid = self._calc_grid(state.last_price, pos_side, new_size)
+                        batch = []
+                        for p, q, v, d in grid:
+                            ps, qs = self._rp(p, info), self._rq(q, info)
+                            if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                                batch.append(
+                                    {"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
+                                     "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
+                        self._place_batch(symbol, batch)
+
         except Exception as e:
             log.error(f"[{symbol}] ❌ Strategy Error {pos_side}: {e}")
 
@@ -377,31 +399,32 @@ class HedgeBot:
                     with self.lock:
                         st = self.states[s];
                         st.last_price = price
+                        now = time.time()
 
-                        # --- ЭКСТРЕННЫЙ СТОП С ОЧИСТКОЙ ОРДЕРОВ ---
+                        # --- RELENTLESS STOP LOGIC ---
                         if st.long_amt > 0 and st.long_sl_price > 0 and price <= st.long_sl_price:
-                            log.critical(f"[{s}] 🚨 SL LONG HIT! {price} <= {st.long_sl_price}. Cleaning orders...")
-                            st.long_sl_price = Decimal("0")
-                            try:
-                                self._cancel_side_orders(s, "LONG")
-                                self.client.new_order(symbol=s, side="SELL", positionSide="LONG", type="MARKET",
-                                                      quantity=self._rq(st.long_amt, st.info))
-                                log.info(f"[{s}] ✅ LONG closed by SL.")
-                            except Exception as ex:
-                                log.error(f"[{s}] SL LONG failed: {ex}")
+                            if now - st.last_sl_attempt > 2.0:
+                                st.last_sl_attempt = now
+                                log.critical(f"[{s}] 🚨 RELENTLESS SL LONG HIT! Cleaning & Closing...")
+                                try:
+                                    self._cancel_side_orders(s, "LONG")
+                                    self.client.new_order(symbol=s, side="SELL", positionSide="LONG", type="MARKET",
+                                                          quantity=self._rq(st.long_amt, st.info))
+                                except:
+                                    pass
 
                         if st.short_amt > 0 and st.short_sl_price > 0 and price >= st.short_sl_price:
-                            log.critical(f"[{s}] 🚨 SL SHORT HIT! {price} >= {st.short_sl_price}. Cleaning orders...")
-                            st.short_sl_price = Decimal("0")
-                            try:
-                                self._cancel_side_orders(s, "SHORT")
-                                self.client.new_order(symbol=s, side="BUY", positionSide="SHORT", type="MARKET",
-                                                      quantity=self._rq(st.short_amt, st.info))
-                                log.info(f"[{s}] ✅ SHORT closed by SL.")
-                            except Exception as ex:
-                                log.error(f"[{s}] SL SHORT failed: {ex}")
+                            if now - st.last_sl_attempt > 2.0:
+                                st.last_sl_attempt = now
+                                log.critical(f"[{s}] 🚨 RELENTLESS SL SHORT HIT! Cleaning & Closing...")
+                                try:
+                                    self._cancel_side_orders(s, "SHORT")
+                                    self.client.new_order(symbol=s, side="BUY", positionSide="SHORT", type="MARKET",
+                                                          quantity=self._rq(st.short_amt, st.info))
+                                except:
+                                    pass
 
-                        # --- ТРЕЙЛИНГ (PAGEN) ---
+                        # --- ТРЕЙЛИНГ ---
                         th = st.trailing_threshold_pct
                         if st.long_amt == 0 and st.long_grid_center > 0:
                             if (price - st.long_grid_center) / st.long_grid_center > th:
@@ -427,8 +450,10 @@ class HedgeBot:
                             amt, ent, ps = Decimal(str(p['pa'])), Decimal(str(p['ep'])), p['ps']
                             if ps == "LONG":
                                 self.states[sym].long_amt, self.states[sym].long_entry = amt, ent
+                                if amt == 0: self.states[sym].long_sl_price = Decimal("0")
                             elif ps == "SHORT":
                                 self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
+                                if amt == 0: self.states[sym].short_sl_price = Decimal("0")
         except:
             pass
 
@@ -448,7 +473,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Starting Bot! GRID_LEVEL: {Config.GRID_LEVELS}, SIMBOL: {Config.SYMBOLS}")
+        log.info(f"🚀 Relentless Bot v1.7 starting. Active SL Logic.")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
@@ -465,7 +490,7 @@ class HedgeBot:
 
         threading.Thread(target=watchdog, daemon=True).start()
         for sym in Config.SYMBOLS:
-            self.update_strategy_for_side(sym, "LONG")
+            self.update_strategy_for_side(sym, "LONG");
             self.update_strategy_for_side(sym, "SHORT")
         try:
             while self.running: time.sleep(1)
