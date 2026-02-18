@@ -52,11 +52,11 @@ class Config:
 
     GRID_LEVELS = 8
     FIB_STEP_BASE = Decimal("0.0002")
-    VOL_COEFF = Decimal("100.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    VOL_COEFF = Decimal("105.0")
+    TAKE_PROFIT_PCT = Decimal("0.0013")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.011")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.0105")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
