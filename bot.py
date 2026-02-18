@@ -56,7 +56,7 @@ class Config:
     TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.018")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
