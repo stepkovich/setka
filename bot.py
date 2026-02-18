@@ -59,7 +59,7 @@ class Config:
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.018")
 
     WATCHDOG_TIMEOUT = 60
-    AUDIT_INTERVAL = 60
+    AUDIT_INTERVAL = 30
     STATE_FILE = "bot_state.json"
 
 
@@ -461,15 +461,40 @@ class HedgeBot:
         last_renew = last_audit = time.time()
         while self.running:
             try:
+                # 1. Продление жизни сокета
                 if time.time() - last_renew > 1800:
-                    self.client.renew_listen_key(self.listen_key);
+                    self.client.renew_listen_key(self.listen_key)
                     last_renew = time.time()
+
+                # 2. Периодический аудит (раз в минуту)
                 if time.time() - last_audit > Config.AUDIT_INTERVAL:
-                    self._sync_all_positions_rest();
+                    # А) Синхронизируем позиции
+                    self._sync_all_positions_rest()
+
+                    # Б) Проверяем, не зависла ли какая-то монета из-за нехватки маржи в прошлом
+                    new_size = self._get_dynamic_order_size()
+                    if new_size > 0:  # Если деньги на счету появились
+                        for sym in Config.SYMBOLS:
+                            # Получаем реальные открытые ордера по монете
+                            all_open = self._safe_get_open_orders(sym)
+
+                            for side in ["LONG", "SHORT"]:
+                                amt = self.states[sym].long_amt if side == "LONG" else self.states[sym].short_amt
+                                side_orders = [o for o in all_open if o['positionSide'] == side]
+
+                                # Если позиции нет И ордеров нет - значит сторона "заглохла"
+                                if amt == 0 and not side_orders:
+                                    log.info(
+                                        f"[{sym}] ♻️ Maintenance: Restarting stalled {side} side (Margin is OK now).")
+                                    threading.Thread(target=self.update_strategy_for_side, args=(sym, side),
+                                                     daemon=True).start()
+
                     last_audit = time.time()
-                self.client.time()
-            except:
-                pass
+
+                self.client.time()  # Пинг REST сессии
+            except Exception as e:
+                log.error(f"Maintenance error: {e}")
+
             time.sleep(10)
 
     def run(self):
