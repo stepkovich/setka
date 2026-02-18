@@ -38,7 +38,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     SYMBOLS = ["DOGEUSDC"]
-    LEVERAGE = 75
+    LEVERAGE = 50
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -50,13 +50,13 @@ class Config:
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("5.2")
 
-    GRID_LEVELS = 9
+    GRID_LEVELS = 8
     FIB_STEP_BASE = Decimal("0.0002")
-    VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    VOL_COEFF = Decimal("100.0")
+    TAKE_PROFIT_PCT = Decimal("0.0016")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.018")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.011")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
