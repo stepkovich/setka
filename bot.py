@@ -37,24 +37,24 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC", "SOLUSDC", "DOGEUSDC", "SUIUSDC", "ENAUSDC", "ADAUSDC", "XRPUSDC"]
-    LEVERAGE = 25
+    SYMBOLS = ["DOGEUSDC"]
+    LEVERAGE = 75
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10.0")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("1")
 
     # Максимальный множитель объема позиции (Защита Recon от перегруза)
-    MAX_EXPOSURE_MULTIPLIER = Decimal("25.0")
+    MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
-    MIN_ORDER_SIZE = Decimal("5.5")
-    MAX_ORDER_SIZE = Decimal("15.0")
+    MIN_ORDER_SIZE = Decimal("5.2")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
-    GRID_LEVELS = 13
-    FIB_STEP_BASE = Decimal("0.00015")
-    VOL_COEFF = Decimal("80.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
-    PAGEN = 10
+    GRID_LEVELS = 8
+    FIB_STEP_BASE = Decimal("0.0002")
+    VOL_COEFF = Decimal("1.0")
+    TAKE_PROFIT_PCT = Decimal("0.0005")
+    PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
 
