@@ -37,8 +37,8 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["DOGEUSDC"]
-    LEVERAGE = 75
+    SYMBOLS = ["ETHUSDC"]
+    LEVERAGE = 125
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
