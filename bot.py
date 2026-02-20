@@ -37,8 +37,8 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["ETHUSDC"]
-    LEVERAGE = 125
+    SYMBOLS = ["SOLUSDC"]
+    LEVERAGE = 100
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -48,7 +48,7 @@ class Config:
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("5.5")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
