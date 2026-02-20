@@ -42,13 +42,13 @@ class Config:
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("10")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("1")
 
     # Максимальный множитель объема позиции (Защита Recon от перегруза)
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("10")
+    MAX_ORDER_SIZE = Decimal("7")
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
