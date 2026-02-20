@@ -48,7 +48,7 @@ class Config:
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("5.2")
+    MAX_ORDER_SIZE = Decimal("5.5")
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
