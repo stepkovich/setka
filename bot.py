@@ -48,12 +48,12 @@ class Config:
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("7")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
     VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    TAKE_PROFIT_PCT = Decimal("0.0005")
     PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
