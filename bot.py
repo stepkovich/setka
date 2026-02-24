@@ -37,7 +37,7 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["XRPUSDC"]
+    SYMBOLS = ["1000PEPEUSDC"]
     LEVERAGE = 75
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
@@ -53,7 +53,7 @@ class Config:
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
     VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.0005")
+    TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
