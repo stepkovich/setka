@@ -37,8 +37,8 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["1000PEPEUSDC"]
-    LEVERAGE = 50
+    SYMBOLS = ["DOGEUSDC"]
+    LEVERAGE = 75
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -52,7 +52,7 @@ class Config:
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
-    VOL_COEFF = Decimal("120.0")
+    VOL_COEFF = Decimal("100.0")
     TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
 
@@ -206,7 +206,7 @@ class HedgeBot:
             available = Decimal(str(acc['availableBalance']))
             wallet = Decimal(str(acc['totalWalletBalance']))
 
-            if available < (wallet * Decimal("0.15")):
+            if available < (wallet * Decimal("0.01")):
                 log.warning("🛑 Low Available Margin! Refusing new deals.")
                 return Decimal("0")
 
