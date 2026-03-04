@@ -52,8 +52,8 @@ class Config:
 
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
-    VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    VOL_COEFF = Decimal("100.0")
+    TAKE_PROFIT_PCT = Decimal("0.0002")
     PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.01")
