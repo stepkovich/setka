@@ -342,8 +342,10 @@ class HedgeBot:
                         self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
                                               type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
                         log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
-                    except ClientError as e:
-                        if e.error_code == -2022: amt = Decimal("0")
+                    except Exception as e:
+                        log.info(f"ERROR: {e}")
+                    # except ClientError as e:
+                    #     if e.error_code == -2022: amt = Decimal("0")
 
                     # 3. СЕТКА УСРЕДНЕНИЯ (с лимитом накопления)
                     if amt > 0:
