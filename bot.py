@@ -10,7 +10,6 @@ from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from functools import wraps
 
-# Lib
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from binance.error import ClientError
