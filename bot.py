@@ -340,7 +340,7 @@ class HedgeBot:
                     tp_ps, tp_qs = self._rp(tp_p, info), self._rq(amt, info)
                     try:
                         self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
-                                              type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTX")
+                                              type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
                         log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
                     except ClientError as e:
                         if e.error_code == -2022: amt = Decimal("0")
