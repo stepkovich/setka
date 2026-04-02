@@ -39,7 +39,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     SYMBOLS = ["DOGEUSDC"]
-    LEVERAGE = 75
+    LEVERAGE = 15
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -760,6 +760,37 @@ class HedgeBot:
                 time.sleep(10)
 
         threading.Thread(target=watchdog, daemon=True).start()
+
+        # --- ПРОГРЕВ: накопление тиков для детекции тренда ---
+        # Пропускаем, если буфер уже заполнен (восстановление из файла)
+        # или есть открытые позиции (нужен немедленный SL/TP мониторинг)
+        warmup_needed = False
+        for sym in Config.SYMBOLS:
+            current_len = len(self.states[sym].price_buffer)
+            has_position = (self.states[sym].long_amt > 0 or self.states[sym].short_amt > 0)
+            if current_len < Config.TREND_MIN_SAMPLES and not has_position:
+                warmup_needed = True
+                break
+
+        if warmup_needed:
+            log.info(
+                f"⏳ Warmup: waiting for {Config.TREND_MIN_SAMPLES} ticks "
+                f"before placing grids (trend detection)..."
+            )
+            for sym in Config.SYMBOLS:
+                while self.running and len(self.states[sym].price_buffer) < Config.TREND_MIN_SAMPLES:
+                    time.sleep(0.5)
+                if not self.running:
+                    break
+                log.info(
+                    f"[{sym}] 🔥 Warmup complete. "
+                    f"Trend: {self.states[sym].trend_direction} "
+                    f"(strength: {self.states[sym].trend_strength:.2f}), "
+                    f"buffer: {len(self.states[sym].price_buffer)} ticks"
+                )
+        else:
+            log.info("⏩ Warmup skipped (buffer restored or positions exist).")
+
         for sym in Config.SYMBOLS:
             self.update_strategy_for_side(sym, "LONG");
             self.update_strategy_for_side(sym, "SHORT")
