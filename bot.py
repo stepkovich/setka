@@ -5,6 +5,7 @@ import logging
 import threading
 import signal
 import json
+import collections
 from decimal import Decimal, getcontext, ROUND_HALF_UP, ROUND_FLOOR
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("HEDGE_RELENTLESS_1.7")
+log = logging.getLogger("HEDGE_RELENTLESS_1.9")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -62,6 +63,20 @@ class Config:
     AUDIT_INTERVAL = 30
     STATE_FILE = "bot_state.json"
 
+    # --- ДЕТЕКЦИЯ ТРЕНДА ---
+    # Количество тиков в буфере для анализа (кольцевой буфер)
+    TREND_BUFFER_SIZE = 500
+    # Минимальное количество тиков перед началом анализа
+    TREND_MIN_SAMPLES = 200
+    # Порог тренда в % за весь буфер (0.15 = 0.15% за ~500 тиков)
+    TREND_THRESHOLD_PCT = Decimal("0.15")
+    # Порог силы тренда (0.0 - 1.0), при котором обе стороны ставятся на паузу
+    TREND_STRONG_PAUSE = Decimal("0.8")
+
+    # --- СОХРАНЕНИЕ СОСТОЯНИЯ ---
+    # Минимальный интервал между сохранениями на диск (секунды)
+    STATE_SAVE_INTERVAL = 5.0
+
 
 @dataclass
 class SymbolPrecision:
@@ -93,6 +108,13 @@ class SymbolState:
     last_sl_attempt: float = 0  # Время последней попытки закрытия по стопу
 
     trailing_threshold_pct: Decimal = Decimal("0")
+
+    # --- ДЕТЕКЦИЯ ТРЕНДА ---
+    price_buffer: collections.deque = field(
+        default_factory=lambda: collections.deque(maxlen=Config.TREND_BUFFER_SIZE)
+    )
+    trend_direction: str = "RANGE"   # "UPTREND", "DOWNTREND", "RANGE"
+    trend_strength: float = 0.0      # -1.0 ... +1.0 (отрицательное = даунтренд)
 
 
 # ==========================================
@@ -133,9 +155,10 @@ class HedgeBot:
         self.states: Dict[str, SymbolState] = {}
         self.last_ws_update = time.time()
         self.listen_key = None
+        self._last_state_save_time: float = 0.0  # Таймер троттлинга сохранений
 
     def initialize(self):
-        log.info("🔹 Starting Relentless Bot v1.7 (Full State + SL Memory)...")
+        log.info("🔹 Starting Relentless Bot v1.9 (Full State + SL Memory + Trend Detection + Persistent Recovery)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
@@ -161,10 +184,51 @@ class HedgeBot:
                 st = SymbolState(symbol=sym, info=prec, trailing_threshold_pct=dist)
 
                 if sym in saved_data:
+                    # --- Существующие поля (размеры ордеров и центры сеток) ---
                     st.current_long_order_size = Decimal(str(saved_data[sym].get('l_size', Config.MIN_ORDER_SIZE)))
                     st.current_short_order_size = Decimal(str(saved_data[sym].get('s_size', Config.MIN_ORDER_SIZE)))
                     st.long_grid_center = Decimal(str(saved_data[sym].get('l_center', "0")))
                     st.short_grid_center = Decimal(str(saved_data[sym].get('s_center', "0")))
+
+                    # --- Восстановление позиций (из последнего сохранения) ---
+                    # Эти данные будут перезаписаны _sync_all_positions_rest(),
+                    # но до того момента бот уже знает о позициях для SL-мониторинга
+                    st.long_amt = Decimal(str(saved_data[sym].get('l_amt', "0")))
+                    st.long_entry = Decimal(str(saved_data[sym].get('l_entry', "0")))
+                    st.short_amt = Decimal(str(saved_data[sym].get('s_amt', "0")))
+                    st.short_entry = Decimal(str(saved_data[sym].get('s_entry', "0")))
+
+                    # --- Восстановление стоп-лосс цен ---
+                    st.long_sl_price = Decimal(str(saved_data[sym].get('l_sl', "0")))
+                    st.short_sl_price = Decimal(str(saved_data[sym].get('s_sl', "0")))
+
+                    # --- Восстановление последней цены ---
+                    saved_last_price = saved_data[sym].get('last_price', "0")
+                    if saved_last_price and Decimal(str(saved_last_price)) > Decimal("0"):
+                        st.last_price = Decimal(str(saved_last_price))
+
+                    # --- Восстановление тренда ---
+                    st.trend_direction = saved_data[sym].get('trend_direction', "RANGE")
+                    saved_strength = saved_data[sym].get('trend_strength', "0")
+                    if saved_strength:
+                        st.trend_strength = float(saved_strength)
+
+                    # --- Восстановление буфера цен (для тренда) ---
+                    saved_buffer = saved_data[sym].get('price_buffer', None)
+                    if saved_buffer and isinstance(saved_buffer, list) and len(saved_buffer) > 0:
+                        for p in saved_buffer[-Config.TREND_BUFFER_SIZE:]:
+                            try:
+                                st.price_buffer.append(float(p))
+                            except (ValueError, TypeError):
+                                pass
+
+                    log.info(
+                        f"[{sym}] 📂 State restored from disk: "
+                        f"L={st.long_amt}@{st.long_entry} SL={st.long_sl_price}, "
+                        f"S={st.short_amt}@{st.short_entry} SL={st.short_sl_price}, "
+                        f"price={st.last_price}, trend={st.trend_direction} "
+                        f"(buffer: {len(st.price_buffer)} ticks)"
+                    )
 
                 self.states[sym] = st
                 self._setup_account(sym)
@@ -172,23 +236,80 @@ class HedgeBot:
                 self.states[sym].last_price = Decimal(str(ticker['price']))
 
             self._sync_all_positions_rest()
+
+            # --- Принудительное сохранение после синхронизации ---
+            # Теперь в файле актуальные данные из REST API
+            self._force_save_state_to_disk()
+
             log.info("✅ Initialization complete.")
         except Exception as e:
             log.critical(f"Init Fail: {e}"); sys.exit(1)
 
     def _save_state_to_disk(self):
+        """Сохраняет полное состояние бота на диск.
+
+        Троттлируется: не чаще чем раз в STATE_SAVE_INTERVAL секунд,
+        чтобы не спамить диск при активной торговле.
+        """
         try:
-            data = {}
-            with self.lock:
-                for sym, st in self.states.items():
-                    data[sym] = {
-                        "l_size": str(st.current_long_order_size), "s_size": str(st.current_short_order_size),
-                        "l_center": str(st.long_grid_center), "s_center": str(st.short_grid_center)
-                    }
-            with open(Config.STATE_FILE, 'w') as f:
-                json.dump(data, f)
+            now = time.time()
+            if now - self._last_state_save_time < Config.STATE_SAVE_INTERVAL:
+                return
+            self._last_state_save_time = now
+
+            self._write_state_to_file()
         except Exception as e:
             log.error(f"Save error: {e}")
+
+    def _force_save_state_to_disk(self):
+        """Принудительное сохранение состояния на диск (без троттлинга).
+
+        Используется в критических моментах: инициализация, смена SL, и т.д.
+        """
+        try:
+            self._last_state_save_time = time.time()
+            self._write_state_to_file()
+        except Exception as e:
+            log.error(f"Force save error: {e}")
+
+    def _write_state_to_file(self):
+        """Непосредственно записывает состояние в файл.
+
+        Выносится в отдельный метод, чтобы избежать дублирования кода
+        между _save_state_to_disk и _force_save_state_to_disk.
+        """
+        data = {}
+        with self.lock:
+            for sym, st in self.states.items():
+                data[sym] = {
+                    # --- Существующие поля: размеры ордеров и центры сеток ---
+                    "l_size": str(st.current_long_order_size),
+                    "s_size": str(st.current_short_order_size),
+                    "l_center": str(st.long_grid_center),
+                    "s_center": str(st.short_grid_center),
+
+                    # --- Позиции (для мгновенного SL-мониторинга после перезапуска) ---
+                    "l_amt": str(st.long_amt),
+                    "l_entry": str(st.long_entry),
+                    "s_amt": str(st.short_amt),
+                    "s_entry": str(st.short_entry),
+
+                    # --- Стоп-лосс цены ---
+                    "l_sl": str(st.long_sl_price),
+                    "s_sl": str(st.short_sl_price),
+
+                    # --- Последняя известная цена ---
+                    "last_price": str(st.last_price),
+
+                    # --- Состояние тренда ---
+                    "trend_direction": st.trend_direction,
+                    "trend_strength": str(st.trend_strength),
+
+                    # --- Буфер цен (для восстановления тренда без "слепого" периода) ---
+                    "price_buffer": list(st.price_buffer)
+                }
+        with open(Config.STATE_FILE, 'w') as f:
+            json.dump(data, f)
 
     def _load_state_from_disk(self) -> dict:
         if os.path.exists(Config.STATE_FILE):
@@ -308,6 +429,92 @@ class HedgeBot:
                     elif p['positionSide'] == "SHORT":
                         self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
 
+    # ==========================================
+    # 2.1 TREND DETECTION (Линейная регрессия)
+    # ==========================================
+    def _detect_trend(self, symbol: str) -> str:
+        """Определяет тренд линейной регрессией по кольцевому буферу цен.
+
+        Возвращает: "UPTREND", "DOWNTREND" или "RANGE".
+        Также обновляет поля trend_direction и trend_strength в SymbolState.
+        """
+        st = self.states[symbol]
+        buf = st.price_buffer
+
+        if len(buf) < Config.TREND_MIN_SAMPLES:
+            st.trend_direction = "RANGE"
+            st.trend_strength = 0.0
+            return "RANGE"
+
+        prices = list(buf)
+        n = len(prices)
+
+        # --- Линейная регрессия: y = slope * x + intercept ---
+        # x — индекс тика (0, 1, 2, ..., n-1)
+        # y — цена
+        x_mean = (n - 1) / 2.0
+        y_mean = sum(prices) / n
+
+        num = 0.0
+        den = 0.0
+        for i in range(n):
+            dx = i - x_mean
+            dy = prices[i] - y_mean
+            num += dx * dy
+            den += dx * dx
+
+        if den == 0:
+            st.trend_direction = "RANGE"
+            st.trend_strength = 0.0
+            return "RANGE"
+
+        slope = num / den  # изменение цены за 1 тик
+
+        # Нормализуем к проценту за весь буфер
+        slope_pct = (slope * n) / y_mean * 100.0  # % изменения за N тиков
+
+        threshold = float(Config.TREND_THRESHOLD_PCT)
+
+        if slope_pct > threshold:
+            # Тренд вверх: сила = нормализованное значение (0.0 ... 1.0)
+            st.trend_direction = "UPTREND"
+            st.trend_strength = min(slope_pct / (threshold * 3.0), 1.0)
+        elif slope_pct < -threshold:
+            # Тренд вниз: сила = отрицательная нормализация (-1.0 ... 0.0)
+            st.trend_direction = "DOWNTREND"
+            st.trend_strength = max(slope_pct / (threshold * 3.0), -1.0)
+        else:
+            st.trend_direction = "RANGE"
+            st.trend_strength = 0.0
+
+        return st.trend_direction
+
+    def _is_trend_against(self, symbol: str, pos_side: str) -> bool:
+        """Проверяет, направлен ли тренд ПРОТИВ указанной стороны позиции.
+
+        Возвращает True, если тренд идёт против нас:
+          - LONG при DOWNTREND → True (цена падает, а мы покупаем)
+          - SHORT при UPTREND → True (цена растёт, а мы продаём)
+        """
+        st = self.states[symbol]
+        trend = st.trend_direction
+
+        if trend == "RANGE":
+            return False
+
+        if pos_side == "LONG" and trend == "DOWNTREND":
+            return True
+
+        if pos_side == "SHORT" and trend == "UPTREND":
+            return True
+
+        return False
+
+    def _is_strong_trend(self, symbol: str) -> bool:
+        """Проверяет, является ли тренд достаточно сильным для полной паузы."""
+        st = self.states[symbol]
+        return abs(st.trend_strength) >= float(Config.TREND_STRONG_PAUSE)
+
     # --- CORE LOGIC ---
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
@@ -332,6 +539,8 @@ class HedgeBot:
                     else:
                         state.short_sl_price = sl_p
                     log.info(f"[{symbol}] 🛡️ SL {pos_side} established at {self._rp(sl_p, info)}")
+                    # --- Сохраняем SL на диск (критично для восстановления) ---
+                    self._save_state_to_disk()
 
                 # 2. ТЕЙК-ПРОФИТ
                 if amt > info.min_qty:
@@ -345,44 +554,67 @@ class HedgeBot:
                     except ClientError as e:
                         if e.error_code == -2022: amt = Decimal("0")
 
-                    # 3. СЕТКА УСРЕДНЕНИЯ (с лимитом накопления)
+                    # 3. СЕТКА УСРЕДНЕНИЯ (с лимитом накопления + проверка тренда)
                     if amt > 0:
                         if (amt * entry) < (current_size * Config.MAX_EXPOSURE_MULTIPLIER):
-                            recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
-                            grid = self._calc_grid(recon_base, pos_side, current_size)
-                            batch = []
-                            for p, q, v, d in grid:
-                                if (is_l and p < state.last_price * Decimal("0.9997")) or (
-                                        not is_l and p > state.last_price * Decimal("1.0003")):
-                                    ps, qs = self._rp(p, info), self._rq(q, info)
-                                    if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
-                                        batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL",
-                                                      "positionSide": pos_side,
-                                                      "type": "LIMIT", "quantity": qs, "price": ps,
-                                                      "timeInForce": "GTX"})
-                            self._place_batch(symbol, batch)
+                            # --- ПРОВЕРКА ТРЕНДА: не усредняться ПРОТИВ тренда ---
+                            if self._is_trend_against(symbol, pos_side):
+                                log.info(
+                                    f"[{symbol}] ⏸️ Trend is {state.trend_direction} "
+                                    f"(strength: {state.trend_strength:.2f}). "
+                                    f"Skipping averaging grid for {pos_side}."
+                                )
+                            else:
+                                recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
+                                grid = self._calc_grid(recon_base, pos_side, current_size)
+                                batch = []
+                                for p, q, v, d in grid:
+                                    if (is_l and p < state.last_price * Decimal("0.9997")) or (
+                                            not is_l and p > state.last_price * Decimal("1.0003")):
+                                        ps, qs = self._rp(p, info), self._rq(q, info)
+                                        if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                                            batch.append({"symbol": symbol, "side": "BUY" if is_l else "SELL",
+                                                          "positionSide": pos_side,
+                                                          "type": "LIMIT", "quantity": qs, "price": ps,
+                                                          "timeInForce": "GTX"})
+                                self._place_batch(symbol, batch)
                         else:
                             log.warning(f"[{symbol}] 🛑 Max exposure reached for {pos_side}. No more averaging.")
 
                 # 4. НОВАЯ СЕТКА (СТАРТ)
                 if amt <= info.min_qty:
-                    new_size = self._get_dynamic_order_size()
-                    if new_size > 0:
-                        if is_l:
-                            state.current_long_order_size, state.long_grid_center = new_size, state.last_price
-                        else:
-                            state.current_short_order_size, state.short_grid_center = new_size, state.last_price
-                        self._save_state_to_disk()
-                        log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_size:.4f}$")
-                        grid = self._calc_grid(state.last_price, pos_side, new_size)
-                        batch = []
-                        for p, q, v, d in grid:
-                            ps, qs = self._rp(p, info), self._rq(q, info)
-                            if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
-                                batch.append(
-                                    {"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
-                                     "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
-                        self._place_batch(symbol, batch)
+                    # --- ПРОВЕРКА ТРЕНДА: не стартовать ПРОТИВ тренда ---
+                    if self._is_trend_against(symbol, pos_side):
+                        log.info(
+                            f"[{symbol}] ⏸️ Trend is {state.trend_direction} "
+                            f"(strength: {state.trend_strength:.2f}). "
+                            f"Not starting new {pos_side} grid."
+                        )
+                    # --- ПРОВЕРКА СИЛЬНОГО ТРЕНДА: пауза обеих сторон ---
+                    elif self._is_strong_trend(symbol):
+                        log.info(
+                            f"[{symbol}] ⏸️ Strong trend detected ({state.trend_direction}, "
+                            f"strength: {state.trend_strength:.2f}). "
+                            f"Pausing new {pos_side} grid."
+                        )
+                    else:
+                        new_size = self._get_dynamic_order_size()
+                        if new_size > 0:
+                            if is_l:
+                                state.current_long_order_size, state.long_grid_center = new_size, state.last_price
+                            else:
+                                state.current_short_order_size, state.short_grid_center = new_size, state.last_price
+                            self._save_state_to_disk()
+                            log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_size:.4f}$")
+                            grid = self._calc_grid(state.last_price, pos_side, new_size)
+                            batch = []
+                            for p, q, v, d in grid:
+                                ps, qs = self._rp(p, info), self._rq(q, info)
+                                if Decimal(qs) >= info.min_qty and (Decimal(ps) * Decimal(qs)) >= info.min_notional:
+                                    batch.append(
+                                        {"symbol": symbol, "side": "BUY" if is_l else "SELL", "positionSide": pos_side,
+                                         "type": "LIMIT", "quantity": qs, "price": ps, "timeInForce": "GTX"})
+                            self._place_batch(symbol, batch)
 
         except Exception as e:
             log.error(f"[{symbol}] ❌ Strategy Error {pos_side}: {e}")
@@ -399,6 +631,8 @@ class HedgeBot:
                     with self.lock:
                         st = self.states[s];
                         st.last_price = price
+                        st.price_buffer.append(float(price))
+                        self._detect_trend(s)
                         now = time.time()
 
                         # --- RELENTLESS STOP LOGIC ---
@@ -454,6 +688,8 @@ class HedgeBot:
                             elif ps == "SHORT":
                                 self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
                                 if amt == 0: self.states[sym].short_sl_price = Decimal("0")
+                        # --- Сохраняем изменение позиции на диск ---
+                        self._save_state_to_disk()
         except:
             pass
 
@@ -471,6 +707,9 @@ class HedgeBot:
                     # А) Синхронизируем позиции
                     self._sync_all_positions_rest()
 
+                    # А.1) Сохраняем синхронизированные позиции на диск
+                    self._save_state_to_disk()
+
                     # Б) Проверяем, не зависла ли какая-то монета из-за нехватки маржи в прошлом
                     new_size = self._get_dynamic_order_size()
                     if new_size > 0:  # Если деньги на счету появились
@@ -484,10 +723,17 @@ class HedgeBot:
 
                                 # Если позиции нет И ордеров нет - значит сторона "заглохла"
                                 if amt == 0 and not side_orders:
-                                    log.info(
-                                        f"[{sym}] ♻️ Maintenance: Restarting stalled {side} side (Margin is OK now).")
-                                    threading.Thread(target=self.update_strategy_for_side, args=(sym, side),
-                                                     daemon=True).start()
+                                    # Не перезапускать, если тренд идёт против этой стороны
+                                    if not self._is_trend_against(sym, side):
+                                        log.info(
+                                            f"[{sym}] ♻️ Maintenance: Restarting stalled {side} side (Margin is OK now).")
+                                        threading.Thread(target=self.update_strategy_for_side, args=(sym, side),
+                                                         daemon=True).start()
+                                    else:
+                                        log.info(
+                                            f"[{sym}] ⏸️ Maintenance: {side} side is stalled but trend is "
+                                            f"{self.states[sym].trend_direction}. Not restarting."
+                                        )
 
                     last_audit = time.time()
 
@@ -498,7 +744,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Relentless Bot v1.7 starting. Active SL Logic.")
+        log.info(f"🚀 Relentless Bot v1.9 starting. Active SL + Trend Detection + Persistent State.")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
