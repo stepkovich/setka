@@ -29,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("HEDGE_RELENTLESS_1.9")
+log = logging.getLogger("HEDGE_BOT_v2.0")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -155,8 +155,8 @@ class HedgeBot:
         self._last_state_save_time: float = 0.0  # Таймер троттлинга сохранений
 
     def initialize(self):
-        log.info("🔹 Starting Relentless Bot v1.9 (Full State + SL Memory + Trend Detection + Persistent Recovery)...")
-        if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
+        log.info("🔹 Запуск бота v2.0 (SL + тренд-детекция + восстановление состояния)")
+        if not Config.API_KEY: log.critical("❌ API ключи не найдены"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
             ex_info = self.client.exchange_info()
@@ -220,11 +220,11 @@ class HedgeBot:
                                 pass
 
                     log.info(
-                        f"[{sym}] 📂 State restored from disk: "
-                        f"L={st.long_amt}@{st.long_entry} SL={st.long_sl_price}, "
-                        f"S={st.short_amt}@{st.short_entry} SL={st.short_sl_price}, "
-                        f"price={st.last_price}, trend={st.trend_direction} "
-                        f"(buffer: {len(st.price_buffer)} ticks)"
+                        f"[{sym}] 📂 Состояние восстановлено: "
+                        f"LONG {st.long_amt}@{st.long_entry} SL={st.long_sl_price} | "
+                        f"SHORT {st.short_amt}@{st.short_entry} SL={st.short_sl_price} | "
+                        f"цена={st.last_price} тренд={st.trend_direction} "
+                        f"буфер={len(st.price_buffer)}"
                     )
 
                 self.states[sym] = st
@@ -238,9 +238,9 @@ class HedgeBot:
             # Теперь в файле актуальные данные из REST API
             self._force_save_state_to_disk()
 
-            log.info("✅ Initialization complete.")
+            log.info("✅ Инициализация завершена")
         except Exception as e:
-            log.critical(f"Init Fail: {e}"); sys.exit(1)
+            log.critical(f"❌ Ошибка инициализации: {e}"); sys.exit(1)
 
     def _save_state_to_disk(self):
         """Сохраняет полное состояние бота на диск.
@@ -256,7 +256,7 @@ class HedgeBot:
 
             self._write_state_to_file()
         except Exception as e:
-            log.error(f"Save error: {e}")
+            log.error(f"Ошибка сохранения: {e}")
 
     def _force_save_state_to_disk(self):
         """Принудительное сохранение состояния на диск (без троттлинга).
@@ -267,7 +267,7 @@ class HedgeBot:
             self._last_state_save_time = time.time()
             self._write_state_to_file()
         except Exception as e:
-            log.error(f"Force save error: {e}")
+            log.error(f"Ошибка принудительного сохранения: {e}")
 
     def _write_state_to_file(self):
         """Непосредственно записывает состояние в файл.
@@ -325,7 +325,7 @@ class HedgeBot:
             wallet = Decimal(str(acc['totalWalletBalance']))
 
             if available < (wallet * Decimal("0.01")):
-                log.warning("🛑 Low Available Margin! Refusing new deals.")
+                log.warning("🛑 Мало свободной маржи, новые сделки отменены")
                 return Decimal("0")
 
             calc = available / (Decimal(str(len(Config.SYMBOLS))) * Config.BALANCE_PER_1_DOLLAR_ORDER)
@@ -342,7 +342,7 @@ class HedgeBot:
                 pass
             self.client.change_leverage(symbol, Config.LEVERAGE)
         except Exception as e:
-            log.warning(f"⚠️ Setup {symbol}: {e}")
+            log.warning(f"⚠️ Настройка {symbol}: {e}")
 
     def _fib(self, n: int) -> List[int]:
         seq = [1, 1]
@@ -427,7 +427,7 @@ class HedgeBot:
                         self.states[sym].short_amt, self.states[sym].short_entry = abs(amt), ent
 
     # ==========================================
-    # 2.1 TREND DETECTION (Линейная регрессия)
+    # 2.1 ДЕТЕКЦИЯ ТРЕНДА (линейная регрессия)
     # ==========================================
     def _detect_trend(self, symbol: str) -> str:
         """Определяет тренд линейной регрессией по кольцевому буферу цен.
@@ -507,7 +507,7 @@ class HedgeBot:
 
         return False
 
-    # --- CORE LOGIC ---
+    # --- ОСНОВНАЯ ЛОГИКА ---
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
         state = self.states[symbol]
@@ -519,7 +519,7 @@ class HedgeBot:
                 amt, entry = (state.long_amt, state.long_entry) if is_l else (state.short_amt, state.short_entry)
                 current_size = state.current_long_order_size if is_l else state.current_short_order_size
 
-                # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (Для мониторинга)
+                # 1. ОБНОВЛЕНИЕ ЦЕНЫ СТОП-ЛОССА (для мониторинга)
                 center = state.long_grid_center if is_l else state.short_grid_center
                 if amt > info.min_qty and center > 0:
                     grid_depth = sum(Config.FIB_STEP_BASE * Decimal(str(f)) for f in self._fib(Config.GRID_LEVELS))
@@ -530,7 +530,7 @@ class HedgeBot:
                         state.long_sl_price = sl_p
                     else:
                         state.short_sl_price = sl_p
-                    log.info(f"[{symbol}] 🛡️ SL {pos_side} established at {self._rp(sl_p, info)}")
+                    log.info(f"[{symbol}] 🛡️ SL {pos_side} → {self._rp(sl_p, info)}")
                     # --- Сохраняем SL на диск (критично для восстановления) ---
                     self._save_state_to_disk()
 
@@ -542,7 +542,7 @@ class HedgeBot:
                     try:
                         self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
                                               type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
-                        log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
+                        log.info(f"[{symbol}] 🎯 TP {pos_side} → {tp_ps}")
                     except ClientError as e:
                         if e.error_code == -2022: amt = Decimal("0")
 
@@ -552,9 +552,9 @@ class HedgeBot:
                             # --- ПРОВЕРКА ТРЕНДА: не усредняться ПРОТИВ тренда ---
                             if self._is_trend_against(symbol, pos_side):
                                 log.info(
-                                    f"[{symbol}] ⏸️ Trend is {state.trend_direction} "
-                                    f"(strength: {state.trend_strength:.2f}). "
-                                    f"Skipping averaging grid for {pos_side}."
+                                    f"[{symbol}] ⏸️ Тренд {state.trend_direction} "
+                                    f"(сила {state.trend_strength:.2f}) "
+                            f"→ усреднение {pos_side} приостановлено"
                                 )
                             else:
                                 recon_base = self._recon(entry, amt, pos_side, symbol, current_size)
@@ -571,18 +571,18 @@ class HedgeBot:
                                                           "timeInForce": "GTX"})
                                 self._place_batch(symbol, batch)
                         else:
-                            log.warning(f"[{symbol}] 🛑 Max exposure reached for {pos_side}. No more averaging.")
+                            log.warning(f"[{symbol}] 🛑 Лимит экспозиции {pos_side}, усреднение остановлено")
 
                 # 4. НОВАЯ СЕТКА (СТАРТ)
                 if amt <= info.min_qty:
                     # --- ПРОВЕРКА ТРЕНДА: не стартовать ПРОТИВ тренда ---
-                    # Сторона ПО тренду (LONG при UPTREND, SHORT при DOWNTREND) ---
+                    # Сторона ПО тренду (LONG при UPTREND, SHORT при DOWNTREND)
                     # разрешена: трейлинг подтягивает сетку за ценой, прибыль на откатах
                     if self._is_trend_against(symbol, pos_side):
                         log.info(
-                            f"[{symbol}] ⏸️ Trend is {state.trend_direction} "
-                            f"(strength: {state.trend_strength:.2f}). "
-                            f"Not starting new {pos_side} grid."
+                            f"[{symbol}] ⏸️ Тренд {state.trend_direction} "
+                            f"(сила {state.trend_strength:.2f}) "
+                            f"→ старт {pos_side} отложен"
                         )
                     else:
                         new_size = self._get_dynamic_order_size()
@@ -592,7 +592,7 @@ class HedgeBot:
                             else:
                                 state.current_short_order_size, state.short_grid_center = new_size, state.last_price
                             self._save_state_to_disk()
-                            log.info(f"[{symbol}] 🆕 Start {pos_side} @ {state.last_price}. Size: {new_size:.4f}$")
+                            log.info(f"[{symbol}] 🆕 Старт {pos_side} от {self._rp(state.last_price, info)} | объём {new_size:.2f}$")
                             grid = self._calc_grid(state.last_price, pos_side, new_size)
                             batch = []
                             for p, q, v, d in grid:
@@ -604,7 +604,7 @@ class HedgeBot:
                             self._place_batch(symbol, batch)
 
         except Exception as e:
-            log.error(f"[{symbol}] ❌ Strategy Error {pos_side}: {e}")
+            log.error(f"[{symbol}] ❌ Ошибка стратегии {pos_side}: {e}")
 
     def on_ws_msg(self, _, m):
         try:
@@ -622,11 +622,11 @@ class HedgeBot:
                         self._detect_trend(s)
                         now = time.time()
 
-                        # --- RELENTLESS STOP LOGIC ---
+                        # --- СТОП-ЛОСС ---
                         if st.long_amt > 0 and st.long_sl_price > 0 and price <= st.long_sl_price:
                             if now - st.last_sl_attempt > 2.0:
                                 st.last_sl_attempt = now
-                                log.critical(f"[{s}] 🚨 RELENTLESS SL LONG HIT! Cleaning & Closing...")
+                                log.critical(f"[{s}] 🚨 СТОП-ЛОСС LONG! Закрытие позиции...")
                                 try:
                                     self._cancel_side_orders(s, "LONG")
                                     self.client.new_order(symbol=s, side="SELL", positionSide="LONG", type="MARKET",
@@ -637,7 +637,7 @@ class HedgeBot:
                         if st.short_amt > 0 and st.short_sl_price > 0 and price >= st.short_sl_price:
                             if now - st.last_sl_attempt > 2.0:
                                 st.last_sl_attempt = now
-                                log.critical(f"[{s}] 🚨 RELENTLESS SL SHORT HIT! Cleaning & Closing...")
+                                log.critical(f"[{s}] 🚨 СТОП-ЛОСС SHORT! Закрытие позиции...")
                                 try:
                                     self._cancel_side_orders(s, "SHORT")
                                     self.client.new_order(symbol=s, side="BUY", positionSide="SHORT", type="MARKET",
@@ -661,7 +661,7 @@ class HedgeBot:
             elif e == 'ORDER_TRADE_UPDATE':
                 o = msg['o']
                 if o['X'] == 'FILLED' and o['s'] in self.states:
-                    log.info(f"[{o['s']}] ⚡ FILLED {o['ps']} {o['S']}")
+                    log.info(f"[{o['s']}] ⚡ Исполнен {o['ps']} {o['S']} @ {o['p']} qty={o['q']}")
                     threading.Thread(target=self.update_strategy_for_side, args=(o['s'], o['ps']), daemon=True).start()
             elif e == 'ACCOUNT_UPDATE':
                 for p in msg['a']['P']:
@@ -689,7 +689,7 @@ class HedgeBot:
                     self.client.renew_listen_key(self.listen_key)
                     last_renew = time.time()
 
-                # 2. Периодический аудит (раз в минуту)
+                # 2. Периодический аудит (раз в AUDIT_INTERVAL сек)
                 if time.time() - last_audit > Config.AUDIT_INTERVAL:
                     # А) Синхронизируем позиции
                     self._sync_all_positions_rest()
@@ -697,7 +697,7 @@ class HedgeBot:
                     # А.1) Сохраняем синхронизированные позиции на диск
                     self._save_state_to_disk()
 
-                    # Б) Проверяем, не зависла ли какая-то монета из-за нехватки маржи в прошлом
+                    # Б) Проверяем, не зависла ли какая-то сторона из-за нехватки маржи
                     new_size = self._get_dynamic_order_size()
                     if new_size > 0:  # Если деньги на счету появились
                         for sym in Config.SYMBOLS:
@@ -708,30 +708,31 @@ class HedgeBot:
                                 amt = self.states[sym].long_amt if side == "LONG" else self.states[sym].short_amt
                                 side_orders = [o for o in all_open if o['positionSide'] == side]
 
-                                # Если позиции нет И ордеров нет - значит сторона "заглохла"
+                                # Если позиции нет И ордеров нет — сторона "заглохла"
                                 if amt == 0 and not side_orders:
                                     # Не перезапускать, если тренд идёт против этой стороны
                                     if not self._is_trend_against(sym, side):
                                         log.info(
-                                            f"[{sym}] ♻️ Maintenance: Restarting stalled {side} side (Margin is OK now).")
+                                            f"[{sym}] ♻️ Перезапуск {side} (маржа восстановлена)"
+                                        )
                                         threading.Thread(target=self.update_strategy_for_side, args=(sym, side),
                                                          daemon=True).start()
                                     else:
                                         log.info(
-                                            f"[{sym}] ⏸️ Maintenance: {side} side is stalled but trend is "
-                                            f"{self.states[sym].trend_direction}. Not restarting."
+                                            f"[{sym}] ⏸️ {side} на паузе "
+                                            f"(тренд {self.states[sym].trend_direction}), не перезапускается"
                                         )
 
                     last_audit = time.time()
 
                 self.client.time()  # Пинг REST сессии
             except Exception as e:
-                log.error(f"Maintenance error: {e}")
+                log.error(f"Ошибка обслуживания: {e}")
 
             time.sleep(10)
 
     def run(self):
-        log.info(f"🚀 Relentless Bot v1.9 starting. Active SL + Trend Detection + Persistent State.")
+        log.info("🚀 Бот v2.0 | SL + тренд-детекция + сохранение состояния")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
@@ -742,7 +743,7 @@ class HedgeBot:
         def watchdog():
             while self.running:
                 if time.time() - self.last_ws_update > Config.WATCHDOG_TIMEOUT:
-                    log.critical("🚨 WebSocket Dead!");
+                    log.critical("🚨 WebSocket не отвечает! Перезапуск...")
                     os.kill(os.getpid(), signal.SIGINT)
                 time.sleep(10)
 
@@ -761,8 +762,7 @@ class HedgeBot:
 
         if warmup_needed:
             log.info(
-                f"⏳ Warmup: waiting for {Config.TREND_MIN_SAMPLES} ticks "
-                f"before placing grids (trend detection)..."
+                f"⏳ Прогрев: ожидание {Config.TREND_MIN_SAMPLES} тиков перед размещением сеток..."
             )
             for sym in Config.SYMBOLS:
                 while self.running and len(self.states[sym].price_buffer) < Config.TREND_MIN_SAMPLES:
@@ -770,13 +770,13 @@ class HedgeBot:
                 if not self.running:
                     break
                 log.info(
-                    f"[{sym}] 🔥 Warmup complete. "
-                    f"Trend: {self.states[sym].trend_direction} "
-                    f"(strength: {self.states[sym].trend_strength:.2f}), "
-                    f"buffer: {len(self.states[sym].price_buffer)} ticks"
+                    f"[{sym}] 🔥 Прогрев завершён: "
+                    f"тренд={self.states[sym].trend_direction} "
+                    f"сила={self.states[sym].trend_strength:.2f} "
+                    f"буфер={len(self.states[sym].price_buffer)}"
                 )
         else:
-            log.info("⏩ Warmup skipped (buffer restored or positions exist).")
+            log.info("⏩ Прогрев пропущен (буфер восстановлен / есть позиции)")
 
         for sym in Config.SYMBOLS:
             self.update_strategy_for_side(sym, "LONG");
