@@ -54,7 +54,7 @@ class Config:
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
     VOL_COEFF = Decimal("100.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    TAKE_PROFIT_PCT = Decimal("0.007")
     PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.0174")
@@ -70,9 +70,6 @@ class Config:
     TREND_MIN_SAMPLES = 200
     # Порог тренда в % за весь буфер (0.15 = 0.15% за ~500 тиков)
     TREND_THRESHOLD_PCT = Decimal("0.15")
-    # Порог силы тренда (0.0 - 1.0), при котором обе стороны ставятся на паузу
-    TREND_STRONG_PAUSE = Decimal("0.8")
-
     # --- СОХРАНЕНИЕ СОСТОЯНИЯ ---
     # Минимальный интервал между сохранениями на диск (секунды)
     STATE_SAVE_INTERVAL = 5.0
@@ -510,11 +507,6 @@ class HedgeBot:
 
         return False
 
-    def _is_strong_trend(self, symbol: str) -> bool:
-        """Проверяет, является ли тренд достаточно сильным для полной паузы."""
-        st = self.states[symbol]
-        return abs(st.trend_strength) >= float(Config.TREND_STRONG_PAUSE)
-
     # --- CORE LOGIC ---
     def update_strategy_for_side(self, symbol, pos_side):
         if symbol not in self.states: return
@@ -584,18 +576,13 @@ class HedgeBot:
                 # 4. НОВАЯ СЕТКА (СТАРТ)
                 if amt <= info.min_qty:
                     # --- ПРОВЕРКА ТРЕНДА: не стартовать ПРОТИВ тренда ---
+                    # Сторона ПО тренду (LONG при UPTREND, SHORT при DOWNTREND) ---
+                    # разрешена: трейлинг подтягивает сетку за ценой, прибыль на откатах
                     if self._is_trend_against(symbol, pos_side):
                         log.info(
                             f"[{symbol}] ⏸️ Trend is {state.trend_direction} "
                             f"(strength: {state.trend_strength:.2f}). "
                             f"Not starting new {pos_side} grid."
-                        )
-                    # --- ПРОВЕРКА СИЛЬНОГО ТРЕНДА: пауза обеих сторон ---
-                    elif self._is_strong_trend(symbol):
-                        log.info(
-                            f"[{symbol}] ⏸️ Strong trend detected ({state.trend_direction}, "
-                            f"strength: {state.trend_strength:.2f}). "
-                            f"Pausing new {pos_side} grid."
                         )
                     else:
                         new_size = self._get_dynamic_order_size()
