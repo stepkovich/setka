@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from functools import wraps
 
+# Lib
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from binance.error import ClientError
@@ -53,10 +54,10 @@ class Config:
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.0002")
     VOL_COEFF = Decimal("100.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.017")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.0174")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
@@ -550,10 +551,8 @@ class HedgeBot:
                         self.client.new_order(symbol=symbol, side="SELL" if is_l else "BUY", positionSide=pos_side,
                                               type="LIMIT", quantity=tp_qs, price=tp_ps, timeInForce="GTC")
                         log.info(f"[{symbol}] 🎯 TP {pos_side} @ {tp_ps}")
-                    except Exception as e:
-                        log.info(f"ERROR: {e}")
-                    # except ClientError as e:
-                    #     if e.error_code == -2022: amt = Decimal("0")
+                    except ClientError as e:
+                        if e.error_code == -2022: amt = Decimal("0")
 
                     # 3. СЕТКА УСРЕДНЕНИЯ (с лимитом накопления + проверка тренда)
                     if amt > 0:
