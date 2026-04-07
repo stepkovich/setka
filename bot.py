@@ -29,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("HEDGE_BOT_v2.0")
+log = logging.getLogger("HEDGE_BOT_v2.1")
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("binance.websocket").setLevel(logging.WARNING)
 
@@ -38,21 +38,21 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["DOGEUSDC", "1000PEPEUSDC"]
+    SYMBOLS = ["DOGEUSDC"]
     LEVERAGE = 75
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
-    BALANCE_PER_1_DOLLAR_ORDER = Decimal("3")
+    BALANCE_PER_1_DOLLAR_ORDER = Decimal("1")
 
     # Максимальный множитель объема позиции (Защита Recon от перегруза)
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
     MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("10")
+    MAX_ORDER_SIZE = Decimal("5.2")
 
     GRID_LEVELS = 9
-    FIB_STEP_BASE = Decimal("0.0002")
+    FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("100.0")
     TAKE_PROFIT_PCT = Decimal("0.0007")
     PAGEN = 3
@@ -113,6 +113,10 @@ class SymbolState:
     trend_direction: str = "RANGE"   # "UPTREND", "DOWNTREND", "RANGE"
     trend_strength: float = 0.0      # -1.0 ... +1.0 (отрицательное = даунтренд)
 
+    # --- ЗАКРЫТИЕ ПО ТРЕНДУ ---
+    # Время последней попытки закрытия позиции по тренду (троттлинг)
+    last_trend_close_attempt: float = 0
+
 
 # ==========================================
 # 1. DECORATOR: RETRY LOGIC
@@ -155,7 +159,7 @@ class HedgeBot:
         self._last_state_save_time: float = 0.0  # Таймер троттлинга сохранений
 
     def initialize(self):
-        log.info("🔹 Запуск бота v2.0 (SL + тренд-детекция + восстановление состояния)")
+        log.info("🔹 Запуск бота v2.1 (SL + тренд-детекция + закрытие по тренду + восстановление)")
         if not Config.API_KEY: log.critical("❌ API ключи не найдены"); sys.exit(1)
         try:
             self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
@@ -645,6 +649,53 @@ class HedgeBot:
                                 except:
                                     pass
 
+                        # --- ЗАКРЫТИЕ ПО ТРЕНДУ ---
+                        # Если тренд направлен ПРОТИВ открытой позиции и нереализованный
+                        # убыток превышает размер TP — закрываем позицию по рынку.
+                        # Логика: если мы уже потеряли больше чем могли бы заработать (TP),
+                        # нет смысла держать позицию против тренда — цена продолжит идти против.
+                        # Троттлинг: не чаще 1 раза в 5 секунд.
+                        if now - st.last_trend_close_attempt > 5.0:
+                            tp_pct = float(Config.TAKE_PROFIT_PCT)
+
+                            if st.long_amt > 0 and self._is_trend_against(s, "LONG") and st.long_entry > 0:
+                                # Для LONG: убыток = (entry - price) / entry
+                                unrealized_loss_pct = float((st.long_entry - price) / st.long_entry)
+                                if unrealized_loss_pct > tp_pct:
+                                    st.last_trend_close_attempt = now
+                                    log.warning(
+                                        f"[{s}] 🔄 Тренд {st.trend_direction} против LONG, "
+                                        f"убыток {unrealized_loss_pct:.4f}% > TP {tp_pct:.4f}% — "
+                                        f"закрытие по рынку"
+                                    )
+                                    try:
+                                        self._cancel_side_orders(s, "LONG")
+                                        self.client.new_order(
+                                            symbol=s, side="SELL", positionSide="LONG",
+                                            type="MARKET", quantity=self._rq(st.long_amt, st.info)
+                                        )
+                                    except:
+                                        pass
+
+                            if st.short_amt > 0 and self._is_trend_against(s, "SHORT") and st.short_entry > 0:
+                                # Для SHORT: убыток = (price - entry) / entry
+                                unrealized_loss_pct = float((price - st.short_entry) / st.short_entry)
+                                if unrealized_loss_pct > tp_pct:
+                                    st.last_trend_close_attempt = now
+                                    log.warning(
+                                        f"[{s}] 🔄 Тренд {st.trend_direction} против SHORT, "
+                                        f"убыток {unrealized_loss_pct:.4f}% > TP {tp_pct:.4f}% — "
+                                        f"закрытие по рынку"
+                                    )
+                                    try:
+                                        self._cancel_side_orders(s, "SHORT")
+                                        self.client.new_order(
+                                            symbol=s, side="BUY", positionSide="SHORT",
+                                            type="MARKET", quantity=self._rq(st.short_amt, st.info)
+                                        )
+                                    except:
+                                        pass
+
                         # --- ТРЕЙЛИНГ ---
                         th = st.trailing_threshold_pct
                         if st.long_amt == 0 and st.long_grid_center > 0:
@@ -732,7 +783,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info("🚀 Бот v2.0 | SL + тренд-детекция + сохранение состояния")
+        log.info("🚀 Бот v2.1 | SL + тренд-детекция + закрытие по тренду + 6 уровней")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
