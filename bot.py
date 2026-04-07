@@ -51,13 +51,13 @@ class Config:
     MIN_ORDER_SIZE = Decimal("5.2")
     MAX_ORDER_SIZE = Decimal("5.2")
 
-    GRID_LEVELS = 9
-    FIB_STEP_BASE = Decimal("0.00015")
+    GRID_LEVELS = 13
+    FIB_STEP_BASE = Decimal("0.00005")
     VOL_COEFF = Decimal("120.0")
     TAKE_PROFIT_PCT = Decimal("0.0005")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.018")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.02")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
