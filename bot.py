@@ -54,7 +54,7 @@ class Config:
     GRID_LEVELS = 9
     FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.0007")
+    TAKE_PROFIT_PCT = Decimal("0.0005")
     PAGEN = 3
 
     STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.018")
@@ -753,7 +753,7 @@ class HedgeBot:
             time.sleep(10)
 
     def run(self):
-        log.info("🚀 Бот v2.2 | Фибоначчи-сетка + тренд-фильтр на вход + SL | 6 уровней")
+        log.info(f"🚀 Бот v2.2 | Фибоначчи-сетка + тренд-фильтр на вход + SL | {Config.GRID_LEVELS} уровней")
         self.initialize()
         self.ws_client = UMFuturesWebsocketClient(on_message=self.on_ws_msg)
         self.listen_key = self.client.new_listen_key()['listenKey']
