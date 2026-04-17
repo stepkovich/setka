@@ -37,8 +37,8 @@ class Config:
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    SYMBOLS = ["DOGEUSDC"]
-    LEVERAGE = 1
+    SYMBOLS = ["DOGEUSDT"]
+    LEVERAGE = 50
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -47,16 +47,16 @@ class Config:
     # Максимальный множитель объема позиции (Защита Recon от перегруза)
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
-    MIN_ORDER_SIZE = Decimal("1000")
-    MAX_ORDER_SIZE = Decimal("5000")
+    MIN_ORDER_SIZE = Decimal("150")
+    MAX_ORDER_SIZE = Decimal("150")
 
-    GRID_LEVELS = 9
-    FIB_STEP_BASE = Decimal("0.00015")
+    GRID_LEVELS = 25
+    FIB_STEP_BASE = Decimal("0.0005")
     VOL_COEFF = Decimal("120.0")
-    TAKE_PROFIT_PCT = Decimal("0.001")
+    TAKE_PROFIT_PCT = Decimal("0.00035")
     PAGEN = 3
 
-    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.015")
+    STOP_LOSS_BEYOND_GRID_PCT = Decimal("0.03")
 
     WATCHDOG_TIMEOUT = 60
     AUDIT_INTERVAL = 30
@@ -138,7 +138,7 @@ class HedgeBot:
         log.info("🔹 Starting Relentless Bot v1.7 (Full State + SL Memory)...")
         if not Config.API_KEY: log.critical("❌ No API Keys"); sys.exit(1)
         try:
-            self.client = UMFutures(key=Config.API_KEY, secret=Config.API_SECRET)
+            self.client = UMFutures(base_url="https://testnet.binancefuture.com", key=Config.API_KEY, secret=Config.API_SECRET)
             ex_info = self.client.exchange_info()
             all_info = {s['symbol']: s for s in ex_info['symbols']}
             saved_data = self._load_state_from_disk()
@@ -237,7 +237,7 @@ class HedgeBot:
         fib_seq = self._fib(Config.GRID_LEVELS)
         cum_dist = Decimal("0")
         for i in range(Config.GRID_LEVELS):
-            step = Config.FIB_STEP_BASE * Decimal(str(fib_seq[i]))
+            step = Config.FIB_STEP_BASE
             cum_dist += step
             price = base * (Decimal("1.0") - cum_dist) if direction == "LONG" else base * (Decimal("1.0") + cum_dist)
             multiplier = max(Decimal("1.0"), Decimal("1.0") + (step * Config.VOL_COEFF))
