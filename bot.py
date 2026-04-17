@@ -38,7 +38,7 @@ class Config:
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     SYMBOLS = ["DOGEUSDC"]
-    LEVERAGE = 75
+    LEVERAGE = 1
 
     # --- РИСК-МЕНЕДЖМЕНТ ---
     # Расчет ордера от ДОСТУПНОГО БАЛАНСА
@@ -47,11 +47,11 @@ class Config:
     # Максимальный множитель объема позиции (Защита Recon от перегруза)
     MAX_EXPOSURE_MULTIPLIER = Decimal("100.0")
 
-    MIN_ORDER_SIZE = Decimal("5.2")
-    MAX_ORDER_SIZE = Decimal("5.2")
+    MIN_ORDER_SIZE = Decimal("1000")
+    MAX_ORDER_SIZE = Decimal("5000")
 
     GRID_LEVELS = 9
-    FIB_STEP_BASE = Decimal("0.0002")
+    FIB_STEP_BASE = Decimal("0.00015")
     VOL_COEFF = Decimal("120.0")
     TAKE_PROFIT_PCT = Decimal("0.001")
     PAGEN = 3
